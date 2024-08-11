@@ -1,7 +1,0 @@
-Metadata-Version: 2.1
-Name: grapple
-Version: 0.1.0
-Summary: A tool to parse books and store subject-predicate-object triples in a graph database
-Author: Will Bradley
-Requires-Dist: spacy>=3.7.5
-Requires-Dist: neo4j>=5.23.1

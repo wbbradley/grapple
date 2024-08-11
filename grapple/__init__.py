@@ -8,12 +8,11 @@ from neo4j import GraphDatabase  # type: ignore
 
 # Function to pre-cache the Spacy model
 def init() -> None:
-    os.system(".venv/bin/pip install spacy")
     os.system(".venv/bin/python -m spacy download en_core_web_sm")
 
 
-# Function to read a book and extract subject-predicate-object triples
-def read(filename: str) -> None:
+def read_txt_file(filename: str) -> None:
+    """Read a book and extract subject-predicate-object triples."""
     nlp = spacy.load("en_core_web_sm")
     driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "password"))
 
@@ -38,9 +37,9 @@ def extract_triples(doc: Any) -> List[Tuple[str, str, str, str]]:
                 for child in token.head.children:
                     if child.dep_ in ("dobj", "attr", "prep"):
                         obj = child
-                        triples.append(
-                            (subject.text, predicate.text, obj.text, sent.text)
-                        )
+                        triple = (subject.text, predicate.lemma_, obj.text, sent.text)
+                        triples.append(triple)
+                        print(triple)
     return triples
 
 
@@ -60,7 +59,7 @@ def store_triples(triples: List[Tuple[str, str, str, str]], driver: Any) -> None
 
 # Function for querying the graph database
 def query() -> None:
-    driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "password"))
+    driver = GraphDatabase.driver("bolt://localhost:7687")
 
     while True:
         query_str = input("Enter your query: ")
@@ -82,7 +81,7 @@ def process_query(query_str: str, driver: Any) -> None:
 # Main function to handle subcommands
 def main() -> None:
     if len(sys.argv) < 2:
-        sys.exit("Usage: grapple <subcommand>")
+        sys.exit("Usage: grapple <init|read|query>")
 
     subcommand = sys.argv[1]
 
@@ -90,9 +89,8 @@ def main() -> None:
         init()
     elif subcommand == "read":
         if len(sys.argv) < 3:
-            print("Usage: grapple read <filename>")
-            sys.exit(1)
-        read(sys.argv[2])
+            sys.exit("Usage: grapple read <filename>")
+        read_txt_file(sys.argv[2])
     elif subcommand == "query":
         query()
     else:
