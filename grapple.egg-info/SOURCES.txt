@@ -1,0 +1,9 @@
+README.md
+pyproject.toml
+grapple/main.py
+grapple.egg-info/PKG-INFO
+grapple.egg-info/SOURCES.txt
+grapple.egg-info/dependency_links.txt
+grapple.egg-info/entry_points.txt
+grapple.egg-info/requires.txt
+grapple.egg-info/top_level.txt

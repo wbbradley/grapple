@@ -2,8 +2,8 @@ import os
 import sys
 from typing import Any, List, Tuple
 
-import spacy
-from neo4j import GraphDatabase
+import spacy  # type: ignore
+from neo4j import GraphDatabase  # type: ignore
 
 
 # Function to pre-cache the Spacy model

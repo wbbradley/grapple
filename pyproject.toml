@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "grapple"
 version = "0.1.0"
-description = "A tool to parse books and store subject-predicate-object triples in a graph database"
-authors = ["Will Bradley"]
+description = "A tool to parse books and store subject-predicate-object triples in a graph database."
+authors = [{ name = "Will Bradley" }]
 dependencies = [
     "spacy >= 3.7.5",
     "neo4j >= 5.23.1",
 ]
-scripts = {
-    "grapple": "grapple:main"
-}
+
+[project.scripts]
+grapple = "grapple:main"
 
