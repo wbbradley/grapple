@@ -1,15 +1,88 @@
 import os
+import subprocess
 import sys
 import time
-from typing import Any, List, Optional, Tuple
+from pprint import pprint
+from typing import Any, Generator, List, Optional, Tuple
 
+import numpy as np  # type: ignore
 import spacy  # type: ignore
 from neo4j import GraphDatabase  # type: ignore
+from openai import OpenAI
+from psycopg2.extras import Json
+from scipy.spatial.distance import cosine  # type: ignore
+
+openai_key = (
+    subprocess.check_output("pass openai-api-key", shell=True).strip().decode("utf-8")
+)
+client = OpenAI(api_key="your-api-key")
+DEFAULT_SPACY_MODEL = "en_core_web_lg"
 
 
-# Function to pre-cache the Spacy model
-def init() -> None:
-    os.system(".venv/bin/python -m spacy download en_core_web_sm")
+def get_sentence_embeddings(sentence: str, model: str) -> list:
+    return client.embeddings.create(
+        input=sentence,
+        model=model,
+    )["data"][0]["embedding"]
+
+
+def upsert_embedding(cursor, sentence: str, model: str, vector: list) -> None:
+    cursor.execute(
+        """
+            INSERT INTO embedding (sentence_text, model, vector, created_at)
+            VALUES (%s, %s, %s, NOW())
+            ON CONFLICT (sentence_text, model) DO NOTHING
+        """,
+        (sentence, model, Json(vector)),
+    )
+
+
+def insert_provenance(
+    cursor, sentence: str, model: str, document: str, position: int
+) -> None:
+    cursor.execute(
+        """
+        INSERT INTO provenance (embedding_sentence_text, embedding_model, document_name, sentence_position)
+        VALUES (%s, %s, %s, %s)
+    """,
+        (sentence, model, document, position),
+    )
+
+
+def process_document(nlp: Any, file_path: str, model: str) -> None:
+    conn = psycopg2.connect(
+        dbname="postgres",
+        user="postgres",
+        password="postgres",
+        host="localhost",
+    )
+    cursor = conn.cursor()
+
+    with open(file_path, "r") as file:
+        text = file.read()
+
+    doc = nlp(text)
+
+    for i, sent in enumerate(doc.sents):
+        sentence = sent.text.strip()
+        cursor.execute(
+            "SELECT vector FROM embedding WHERE sentence_text = %s AND model = %s",
+            (sentence, model),
+        )
+        result = cursor.fetchone()
+
+        if result is None:
+            vector = get_sentence_embeddings(sentence, model)
+            upsert_embedding(cursor, sentence, model, vector)
+        insert_provenance(cursor, sentence, model, file_path, i)
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def init(model: str) -> None:
+    os.system(".venv/bin/python -m spacy download {model}")
 
 
 class Timer:
@@ -25,97 +98,59 @@ class Timer:
         print(f"{self.name} took {elapsed_time:.2f} seconds.")
 
 
-def read_txt_file(filename: str) -> None:
+def read_txt_file(filename: str, model: str) -> None:
     """Read a book and extract subject-predicate-object triples."""
-    nlp = spacy.load("en_core_web_sm")
-    driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "password"))
-
-    with open(filename, "r", encoding="utf-8") as file:
-        text = file.read()
+    nlp = spacy.load(model)
 
     with Timer("run nlp on doc"):
-        doc = nlp(text)
-    with Timer("extract triples"):
-        triples = extract_triples(doc)
+        process_document(nlp, filename, "text-embedding-3-large")
+
+        # triples = extract_triples(doc)
     # store_triples(triples, driver)
 
 
-def extract_triples(doc: Any) -> List[Tuple[str, str, str, str]]:
-    triples = []
-    for sentence in doc.sents:
-        # print(f"Analyzing sentence ({sentence.text})")
-        for token in sentence:
-            assert token is not None
-            if (
-                token.dep_ in ("nsubj", "nsubjpass")
-                and token.head
-                and token.head.dep_
-                in (
-                    "ROOT",
-                    "relcl",
-                )
-            ):
-                subject = get_noun_phrase(token)
-                predicate = get_enhanced_verb_phrase(token.head)
-                obj = get_noun_phrase(find_obj(token.head))
-                if subject and predicate and obj:
-                    triples.append((subject, predicate, obj, sentence.text))
-    return triples
+def normalize(v: np.array) -> np.array:
+    norm = np.linalg.norm(v)
+    if norm != 0:
+        return v / norm
+    return v
 
 
-def get_noun_phrase(token: Any) -> Optional[str]:
-    if token is not None and token.dep_ in ("nsubj", "nsubjpass"):
-        return " ".join([child.text for child in token.subtree])
-    return None
-
-
-def get_enhanced_verb_phrase(token: Any) -> str:
-    if token.lemma_ == "boil":
-        return "is angry at"
-    # Add more custom rules here as needed
-    return token.lemma_
-
-
-def find_obj(head: Any) -> Any:
-    for child in head.children:
-        if child.dep_ in ("dobj", "attr", "prep"):
-            return child
-    return None
-
-
-def store_triples(triples: List[Tuple[str, str, str, str]], driver: Any) -> None:
-    with driver.session() as session:
-        for subj, pred, obj, sent_text in triples:
-            session.run(
-                "MERGE (a:Entity {name: $subj}) "
-                "MERGE (b:Entity {name: $obj}) "
-                "MERGE (a)-[:RELATION {type: $pred, sentence: $sent_text}]->(b)",
-                subj=subj,
-                pred=pred,
-                obj=obj,
-                sent_text=sent_text,
-            )
+def sentence_embeddings(doc: Any) -> Generator[Tuple[Any, np.ndarray], None, None]:
+    for sent in doc.sents:
+        yield sent, sent.vector
 
 
 # Function for querying the graph database
-def query() -> None:
+def query(filename: str, model: str) -> None:
     driver = GraphDatabase.driver("bolt://localhost:7687")
+    nlp = spacy.load(model)
+
+    with Timer(f"read file text ({filename})"):
+        with open(filename, "r", encoding="utf-8") as file:
+            text = file.read()
+
+    with Timer(f"run nlp ({model}) on {filename}"):
+        doc = nlp(text)
+
+    with Timer("generate sentence embeddings"):
+        embeddings = list(sentence_embeddings(doc))
 
     while True:
         query_str = input("Enter your query: ")
-        process_query(query_str, driver)
+        similarities = process_query(nlp, doc, embeddings, query_str, driver, 10)
+        pprint(similarities)
 
 
-def process_query(query_str: str, driver: Any) -> None:
-    # Placeholder for normalizing and transforming to Cypher query
-    cypher_query = (
-        f"MATCH (a)-[r]->(b) WHERE r.sentence CONTAINS '{query_str}' RETURN a, r, b"
-    )
-
-    with driver.session() as session:
-        result = session.run(cypher_query)
-        for record in result:
-            print(record)
+def process_query(
+    nlp: Any, doc: Any, embeddings: List, query_str: str, driver: Any, top_n: int
+) -> List[Tuple[float, str]]:
+    query_vec = normalize(nlp(query_str).vector)
+    similarities = [
+        ((1 - cosine(query_vec, vec)), sent.text) for sent, vec in embeddings
+    ]
+    similarities.sort()
+    return similarities[:top_n]
 
 
 # Main function to handle subcommands
@@ -123,16 +158,26 @@ def main() -> None:
     if len(sys.argv) < 2:
         sys.exit("Usage: grapple <init|read|query>")
 
+    model = DEFAULT_SPACY_MODEL
     subcommand = sys.argv[1]
 
     if subcommand == "init":
-        init()
+        init(model)
+    elif subcommand == "embed":
+        if len(sys.argv) < 3:
+            sys.exit("Usage: grapple embed <text>")
+        nlp = spacy.load(model)
+        doc = nlp(sys.argv[2])
+        for sent in doc.sents:
+            print(f"Sentence: {sent.text}\nVector: {sent.vector}")
     elif subcommand == "read":
         if len(sys.argv) < 3:
             sys.exit("Usage: grapple read <filename>")
-        read_txt_file(sys.argv[2])
+        read_txt_file(sys.argv[2], model=model)
     elif subcommand == "query":
-        query()
+        if len(sys.argv) < 3:
+            sys.exit("Usage: grapple query <filename>")
+        query(sys.argv[2], model=model)
     else:
         print(f"Unknown subcommand: {subcommand}")
 

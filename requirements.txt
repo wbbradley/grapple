@@ -1,3 +1,5 @@
-spacy
 neo4j
-orjson
+scipy
+spacy
+psycopg2-binary
+openai
