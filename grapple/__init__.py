@@ -1,16 +1,17 @@
 import os
 import re
 import subprocess
-from typing import List, NamedTuple, Tuple, Union
+from typing import List, NamedTuple, Optional, Tuple, Union
 
 import click
-import numpy as np  # type: ignore
+import numpy as np
 import psycopg
-import spacy  # type: ignore
-from neo4j import GraphDatabase  # type: ignore
+import spacy
+import tiktoken
+from neo4j import GraphDatabase
 from openai import OpenAI
 from psycopg.types.json import Json
-from tqdm import tqdm  # type: ignore
+from tqdm import tqdm
 
 from grapple.timer import Timer
 
@@ -49,18 +50,26 @@ class GraphEdge(NamedTuple):
 GraphItem = Union[GraphEdge, GraphNode]
 
 
+def get_existing_sentence_embedding(
+    cursor: psycopg.Cursor,
+    sentence: str,
+    model: str,
+) -> Optional[Tuple[int, List[float]]]:
+    cursor.execute(
+        "SELECT id, vector FROM embedding WHERE sentence_text = %s AND model = %s",
+        (sentence, model),
+    )
+    return cursor.fetchone()
+
+
 def get_sentence_embedding(
     cursor: psycopg.Cursor,
     sentence: str,
     model: str,
 ) -> Tuple[int, Vector]:
-    cursor.execute(
-        "SELECT id, vector FROM embedding WHERE sentence_text = %s AND model = %s",
-        (sentence, model),
-    )
-    result = cursor.fetchone()
-
-    if result is None:
+    if result := get_existing_sentence_embedding(cursor, sentence, model):
+        vector = result[1]
+    else:
         vector = (
             openai_client.embeddings.create(
                 input=sentence,
@@ -69,14 +78,11 @@ def get_sentence_embedding(
             .data[0]
             .embedding
         )
-        embedding_id = upsert_embedding(cursor, sentence, model, vector)
-    else:
-        embedding_id = result[0]
-        vector = result[1]
-    return embedding_id, vector
+        upsert_embedding(cursor, sentence, model, vector)
+    return vector
 
 
-def upsert_embedding(cursor, sentence: str, model: str, vector: Vector) -> int:
+def upsert_embedding(cursor, sentence: str, model: str, vector: Vector) -> None:
     cursor.execute(
         """
             INSERT INTO embedding (sentence_text, model, vector, created_at)
@@ -86,9 +92,7 @@ def upsert_embedding(cursor, sentence: str, model: str, vector: Vector) -> int:
         """,
         (sentence, model, Json(vector)),
     )
-    result = cursor.fetchone()
     cursor.connection.commit()
-    return result[0]
 
 
 def process_document(
@@ -99,8 +103,6 @@ def process_document(
 
     with Timer("run nlp on doc"):
         doc: spacy.tokens.doc.Doc = nlp(text)
-
-    with Timer("get sentences from doc"):
         sentences = list(doc.sents)
 
     with psycopg.connect(
@@ -111,12 +113,55 @@ def process_document(
         port="5432",
     ) as conn:
         with conn.cursor() as cursor:
-            for sent in tqdm(sentences):
-                embedding_id, vector = get_sentence_embedding(
-                    cursor,
-                    re.sub(r"\s+", " ", sent.text).strip(),
-                    openai_embedding_model,
-                )
+            ensure_sentence_embeddings(cursor, sentences, openai_embedding_model)
+
+
+def ensure_sentence_embeddings_core(
+    cursor: psycopg.Cursor,
+    sentences: List[str],
+    model: str,
+):
+    if len(sentences) == 0:
+        return
+    vectors = [
+        x.embedding
+        for x in openai_client.embeddings.create(
+            input=sentences,
+            model=model,
+        ).data
+    ]
+    for sentence, vector in zip(sentences, vectors):
+        upsert_embedding(cursor, sentence, model, vector)
+
+
+def num_tokens_from_string(string: str, encoding_name: str) -> int:
+    """Returns the number of tokens in a text string."""
+    encoding = tiktoken.get_encoding(encoding_name)
+    num_tokens = len(encoding.encode(string))
+    return num_tokens
+
+
+def ensure_sentence_embeddings(
+    cursor: psycopg.Cursor,
+    sentences: List[spacy.tokens.span.Span],
+    model: str,
+):
+    chunk_size = 100
+    chunk = []
+    for sentence in tqdm(sentences):
+        sentence_text = re.sub(r"\s+", " ", sentence.text).strip()
+        if num_tokens_from_string(sentence_text, "cl100k_base") > 8000:
+            # Skip super-long sentences.
+            # print(f"skipping sentence {sentence_text} because it has too many tokens")
+            continue
+        if get_existing_sentence_embedding(cursor, sentence_text, model):
+            # print(f"skipping sentence {sentence_text} because it already exists in db")
+            continue
+        chunk.append(sentence_text)
+        if len(chunk) >= chunk_size:
+            ensure_sentence_embeddings_core(cursor, chunk, model)
+            chunk = []
+    ensure_sentence_embeddings_core(cursor, chunk, model)
 
 
 @main.command()
@@ -159,23 +204,6 @@ def query(filename: str, model: str) -> None:
         _graph_items = fetch_nearest_graph_items(query_embedding, top_n=25)
         # similarities = process_query(embeddings, query_str, driver, 10)
         # pprint(similarities)
-
-
-"""
-def process_query(
-    doc: spacy.tokens.doc.Doc,
-    embeddings: List,
-    query_str: str,
-    driver: Any,
-    top_n: int,
-) -> List[Tuple[float, str]]:
-    # query_vec = normalize(get_sentence_embedding(nlp(query_str).vector))
-    # similarities = [ ((1 - cosine(query_vec, vec)), sent.text) for sent, vec in embeddings ]
-    # similarities.sort()
-    # return similarities[:top_n]
-    pass
-
-"""
 
 
 @main.command()
