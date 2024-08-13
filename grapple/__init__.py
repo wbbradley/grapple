@@ -1,6 +1,7 @@
 import os
+import re
 import subprocess
-from typing import List, NamedTuple, Tuple, Union, reveal_type
+from typing import List, NamedTuple, Tuple, Union
 
 import click
 import numpy as np  # type: ignore
@@ -53,7 +54,6 @@ def get_sentence_embedding(
     sentence: str,
     model: str,
 ) -> Tuple[int, Vector]:
-    sentence = sentence.text.strip()
     cursor.execute(
         "SELECT id, vector FROM embedding WHERE sentence_text = %s AND model = %s",
         (sentence, model),
@@ -94,6 +94,15 @@ def upsert_embedding(cursor, sentence: str, model: str, vector: Vector) -> int:
 def process_document(
     nlp: spacy.language.Language, file_path: str, openai_embedding_model: str
 ) -> None:
+    with open(file_path, "r") as file:
+        text = file.read()
+
+    with Timer("run nlp on doc"):
+        doc: spacy.tokens.doc.Doc = nlp(text)
+
+    with Timer("get sentences from doc"):
+        sentences = list(doc.sents)
+
     with psycopg.connect(
         dbname="postgres",
         user="postgres",
@@ -102,16 +111,10 @@ def process_document(
         port="5432",
     ) as conn:
         with conn.cursor() as cursor:
-            with open(file_path, "r") as file:
-                text = file.read()
-
-            with Timer("run nlp on doc"):
-                doc: spacy.tokens.doc.Doc = nlp(text)
-
-            for i, sent in enumerate(tqdm(doc.sents)):
+            for sent in tqdm(sentences):
                 embedding_id, vector = get_sentence_embedding(
                     cursor,
-                    sent,
+                    re.sub(r"\s+", " ", sent.text).strip(),
                     openai_embedding_model,
                 )
 
@@ -129,7 +132,6 @@ def download_spacy_model(model: str) -> None:
 def ingest(filename: str, openai_model: str, spacy_model: str) -> None:
     """Read a book and extract subject-predicate-object triples."""
     nlp = spacy.load(spacy_model)
-    reveal_type(nlp)
     with Timer(f"process document [filename={filename}]"):
         process_document(nlp, filename, "text-embedding-3-large")
 
