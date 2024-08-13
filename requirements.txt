@@ -1,5 +1,11 @@
+click
+ipython
+mypy
 neo4j
+openai
+psycopg
+psycopg_binary
+pytest
 scipy
 spacy
-psycopg2-binary
-openai
+tqdm

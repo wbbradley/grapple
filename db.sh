@@ -20,6 +20,7 @@ db-init-dbs() {
 
   docker run \
     --name grapple-rdb \
+    --publish=5432:5432 \
     -e POSTGRES_PASSWORD=postgres \
     -d \
     postgres:16.4
