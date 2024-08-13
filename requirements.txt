@@ -11,3 +11,4 @@ spacy
 tiktoken
 tqdm
 types-tqdm
+pydantic

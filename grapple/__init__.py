@@ -1,16 +1,20 @@
 import os
 import re
 import subprocess
-from typing import List, NamedTuple, Optional, Tuple, Union
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Tuple, Union
 
 import click
 import numpy as np
 import psycopg
 import spacy
 import tiktoken
-from neo4j import GraphDatabase
 from openai import OpenAI
+from psycopg.rows import dict_row
 from psycopg.types.json import Json
+from pydantic import BaseModel
+from scipy.spatial.distance import cosine  # type: ignore
 from tqdm import tqdm
 
 from grapple.timer import Timer
@@ -26,6 +30,7 @@ openai_client = OpenAI(
 DEFAULT_SPACY_MODEL = "en_core_web_lg"
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 
+Cursor = psycopg.Cursor[dict[str, Any]]
 Vector = List[float]
 
 
@@ -51,35 +56,40 @@ GraphItem = Union[GraphEdge, GraphNode]
 
 
 def get_existing_sentence_embedding(
-    cursor: psycopg.Cursor,
+    cursor: Cursor,
     sentence: str,
-    model: str,
+    openai_embedding_model: str,
 ) -> Optional[Tuple[int, List[float]]]:
     cursor.execute(
         "SELECT id, vector FROM embedding WHERE sentence_text = %s AND model = %s",
-        (sentence, model),
+        (sentence, openai_embedding_model),
     )
-    return cursor.fetchone()
+    result = cursor.fetchone()
+    if result is not None:
+        return result["id"], result["vector"]
+    return None
 
 
 def get_sentence_embedding(
-    cursor: psycopg.Cursor,
+    cursor: Cursor,
     sentence: str,
-    model: str,
-) -> Tuple[int, Vector]:
-    if result := get_existing_sentence_embedding(cursor, sentence, model):
-        vector = result[1]
+    openai_embedding_model: str,
+) -> Vector:
+    if result := get_existing_sentence_embedding(
+        cursor, sentence, openai_embedding_model
+    ):
+        return result[1]
     else:
         vector = (
             openai_client.embeddings.create(
                 input=sentence,
-                model=model,
+                model=openai_embedding_model,
             )
             .data[0]
             .embedding
         )
-        upsert_embedding(cursor, sentence, model, vector)
-    return vector
+        upsert_embedding(cursor, sentence, openai_embedding_model, vector)
+        return vector
 
 
 def upsert_embedding(cursor, sentence: str, model: str, vector: Vector) -> None:
@@ -96,7 +106,9 @@ def upsert_embedding(cursor, sentence: str, model: str, vector: Vector) -> None:
 
 
 def process_document(
-    nlp: spacy.language.Language, file_path: str, openai_embedding_model: str
+    nlp: spacy.language.Language,
+    file_path: str,
+    openai_embedding_model: str,
 ) -> None:
     with open(file_path, "r") as file:
         text = file.read()
@@ -105,44 +117,12 @@ def process_document(
         doc: spacy.tokens.doc.Doc = nlp(text)
         sentences = list(doc.sents)
 
-    with psycopg.connect(
-        dbname="postgres",
-        user="postgres",
-        password="postgres",
-        host="127.0.0.1",
-        port="5432",
-    ) as conn:
-        with conn.cursor() as cursor:
-            ensure_sentence_embeddings(cursor, sentences, openai_embedding_model)
-
-
-def ensure_sentence_embeddings_core(
-    cursor: psycopg.Cursor,
-    sentences: List[str],
-    model: str,
-):
-    if len(sentences) == 0:
-        return
-    vectors = [
-        x.embedding
-        for x in openai_client.embeddings.create(
-            input=sentences,
-            model=model,
-        ).data
-    ]
-    for sentence, vector in zip(sentences, vectors):
-        upsert_embedding(cursor, sentence, model, vector)
-
-
-def num_tokens_from_string(string: str, encoding_name: str) -> int:
-    """Returns the number of tokens in a text string."""
-    encoding = tiktoken.get_encoding(encoding_name)
-    num_tokens = len(encoding.encode(string))
-    return num_tokens
+    with db_cursor() as cursor:
+        ensure_sentence_embeddings(cursor, sentences, openai_embedding_model)
 
 
 def ensure_sentence_embeddings(
-    cursor: psycopg.Cursor,
+    cursor: Cursor,
     sentences: List[spacy.tokens.span.Span],
     model: str,
 ):
@@ -164,6 +144,31 @@ def ensure_sentence_embeddings(
     ensure_sentence_embeddings_core(cursor, chunk, model)
 
 
+def num_tokens_from_string(string: str, encoding_name: str) -> int:
+    """Returns the number of tokens in a text string."""
+    encoding = tiktoken.get_encoding(encoding_name)
+    num_tokens = len(encoding.encode(string))
+    return num_tokens
+
+
+def ensure_sentence_embeddings_core(
+    cursor: Cursor,
+    sentences: List[str],
+    model: str,
+):
+    if len(sentences) == 0:
+        return
+    vectors = [
+        x.embedding
+        for x in openai_client.embeddings.create(
+            input=sentences,
+            model=model,
+        ).data
+    ]
+    for sentence, vector in zip(sentences, vectors):
+        upsert_embedding(cursor, sentence, model, vector)
+
+
 @main.command()
 @click.argument("model", default=DEFAULT_SPACY_MODEL)
 def download_spacy_model(model: str) -> None:
@@ -172,11 +177,11 @@ def download_spacy_model(model: str) -> None:
 
 @main.command(name="ingest")
 @click.argument("filename")
-@click.option("--openai-model", default=DEFAULT_OPENAI_EMBEDDING_MODEL)
-@click.option("--spacy-model", default=DEFAULT_SPACY_MODEL)
-def ingest(filename: str, openai_model: str, spacy_model: str) -> None:
+@click.option("--openai-embedding-model", default=DEFAULT_OPENAI_EMBEDDING_MODEL)
+@click.option("--spacy-nlp-model", default=DEFAULT_SPACY_MODEL)
+def ingest(filename: str, openai_embedding_model: str, spacy_nlp_model: str) -> None:
     """Read a book and extract subject-predicate-object triples."""
-    nlp = spacy.load(spacy_model)
+    nlp = spacy.load(spacy_nlp_model)
     with Timer(f"process document [filename={filename}]"):
         process_document(nlp, filename, "text-embedding-3-large")
 
@@ -192,22 +197,76 @@ def normalize(v: np.array) -> np.array:
 
 
 @main.command()
-def query(filename: str, model: str) -> None:
+@click.option("--openai-embedding-model", default=DEFAULT_OPENAI_EMBEDDING_MODEL)
+def query(openai_embedding_model: str) -> None:
     # filename -> source -> doc -> chunks -> triplets with embeddings and summaries -> storage
     # query -> embedding -> vector query -> gather related edges and nodes -> RAG prompt with query
 
-    _driver = GraphDatabase.driver("bolt://localhost:7687")
+    # _driver = GraphDatabase.driver("bolt://localhost:7687")
 
     while True:
         query_str = input("Enter your query: ")
-        query_embedding = fetch_embedding(query_str)
-        _graph_items = fetch_nearest_graph_items(query_embedding, top_n=25)
-        # similarities = process_query(embeddings, query_str, driver, 10)
-        # pprint(similarities)
+        with db_cursor() as cursor:
+            query_embedding: Vector = get_sentence_embedding(
+                cursor,
+                query_str,
+                openai_embedding_model,
+            )
+            embeddings_with_distance = get_k_nearest_embeddings(
+                cursor,
+                query_embedding,
+                top_n=10,
+            )
+
+        for ewd in embeddings_with_distance:
+            print(f"{ewd.distance}: {ewd.embedding.sentence_text}")
 
 
-@main.command()
-def testdb() -> None:
+class Embedding(BaseModel):
+    id: int
+    sentence_text: str
+    model: str
+    vector: List[float]
+
+
+@dataclass
+class EmbeddingWithDistance:
+    embedding: Embedding
+    distance: float
+
+
+def get_k_nearest_embeddings(
+    cursor: Cursor, query: Vector, top_n: int
+) -> List[EmbeddingWithDistance]:
+    cursor.execute(
+        """
+            SELECT id, sentence_text, model, vector
+            FROM embedding
+            ORDER BY created_at
+        """
+    )
+    embeddings = [Embedding.parse_obj(row) for row in cursor]
+
+    _distance_cache: Dict[int, float] = {}
+
+    def _get_embedding_distance(embedding) -> float:
+        nonlocal _distance_cache
+        val = _distance_cache.get(embedding.id)
+        if val is not None:
+            return val
+
+        _distance_cache[embedding.id] = val = cosine(embedding.vector, query)
+        return val
+
+    embeddings.sort(key=_get_embedding_distance)
+    return [
+        EmbeddingWithDistance(embedding=x, distance=_distance_cache[x.id])
+        for x in embeddings[:top_n]
+    ]
+
+
+@contextmanager
+def db_cursor(row_factory: Any = dict_row) -> Iterator[Cursor]:
     with psycopg.connect(
         dbname="postgres",
         user="postgres",
@@ -215,12 +274,16 @@ def testdb() -> None:
         host="127.0.0.1",
         port="5432",
     ) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT 1, 2 UNION SELECT 3, 4")
-            result = cursor.fetchone()
-            cursor.close()
-            conn.close()
-            print(result)
+        with conn.cursor(row_factory=row_factory) as cursor:
+            yield cursor
+
+
+@main.command()
+def testdb() -> None:
+    with db_cursor() as cursor:
+        cursor.execute("SELECT 1, 2 UNION SELECT 3, 4")
+        result = cursor.fetchone()
+        print(result)
 
 
 def fetch_embedding(text: str) -> Vector:

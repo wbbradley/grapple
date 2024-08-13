@@ -15,3 +15,10 @@ dependencies = [
 [project.scripts]
 grapple = "grapple:main"
 
+[tool.autoimport.common_statements]
+np = "import numpy as np"
+tqdm = "from tqdm import tqdm"
+pprint = "from pprint import pprint"
+dataclass = "from dataclasses import dataclass"
+cosine = "from scipy.spatial.distance import cosine"
+BaseModel = "from pydantic import BaseModel"
