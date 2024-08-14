@@ -3,7 +3,7 @@ import re
 import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Tuple, Union
+from typing import Any, Iterator, List, NamedTuple, Optional, Tuple, Union
 
 import click
 import numpy as np
@@ -78,6 +78,7 @@ def get_sentence_embedding(
     if result := get_existing_sentence_embedding(
         cursor, sentence, openai_embedding_model
     ):
+        print(f"[get_sentence_embedding] found result for ({sentence}) in db")
         return result[1]
     else:
         vector = (
@@ -114,6 +115,7 @@ def process_document(
         text = file.read()
 
     with Timer("run nlp on doc"):
+        nlp.max_length = 4000000
         doc: spacy.tokens.doc.Doc = nlp(text)
         sentences = list(doc.sents)
 
@@ -126,7 +128,7 @@ def ensure_sentence_embeddings(
     sentences: List[spacy.tokens.span.Span],
     model: str,
 ):
-    chunk_size = 100
+    chunk_size = 200
     chunk = []
     for sentence in tqdm(sentences):
         sentence_text = re.sub(r"\s+", " ", sentence.text).strip()
@@ -139,9 +141,9 @@ def ensure_sentence_embeddings(
             continue
         chunk.append(sentence_text)
         if len(chunk) >= chunk_size:
-            ensure_sentence_embeddings_core(cursor, chunk, model)
+            bulk_upsert_embeddings(cursor, chunk, model)
             chunk = []
-    ensure_sentence_embeddings_core(cursor, chunk, model)
+    bulk_upsert_embeddings(cursor, chunk, model)
 
 
 def num_tokens_from_string(string: str, encoding_name: str) -> int:
@@ -151,7 +153,7 @@ def num_tokens_from_string(string: str, encoding_name: str) -> int:
     return num_tokens
 
 
-def ensure_sentence_embeddings_core(
+def bulk_upsert_embeddings(
     cursor: Cursor,
     sentences: List[str],
     model: str,
@@ -235,34 +237,46 @@ class EmbeddingWithDistance:
     distance: float
 
 
+def make_embedding_with_distance(
+    query: Vector, embedding: Embedding
+) -> EmbeddingWithDistance:
+    return EmbeddingWithDistance(
+        embedding=embedding, distance=cosine(embedding.vector, query)
+    )
+
+
+_embeddings: List[Embedding] = []
+
+
+def fetch_all_embeddings(cursor: Cursor) -> List[Embedding]:
+    # Cached once per process.
+    if _embeddings:
+        return _embeddings
+
+    with Timer("gather all embeddings"):
+        cursor.execute(
+            """
+                SELECT id, sentence_text, model, vector
+                FROM embedding
+                ORDER BY created_at
+            """
+        )
+        for row in cursor:
+            _embeddings.append(Embedding.parse_obj(row))
+        return _embeddings
+
+
 def get_k_nearest_embeddings(
     cursor: Cursor, query: Vector, top_n: int
 ) -> List[EmbeddingWithDistance]:
-    cursor.execute(
-        """
-            SELECT id, sentence_text, model, vector
-            FROM embedding
-            ORDER BY created_at
-        """
-    )
-    embeddings = [Embedding.parse_obj(row) for row in cursor]
-
-    _distance_cache: Dict[int, float] = {}
-
-    def _get_embedding_distance(embedding) -> float:
-        nonlocal _distance_cache
-        val = _distance_cache.get(embedding.id)
-        if val is not None:
-            return val
-
-        _distance_cache[embedding.id] = val = cosine(embedding.vector, query)
-        return val
-
-    embeddings.sort(key=_get_embedding_distance)
-    return [
-        EmbeddingWithDistance(embedding=x, distance=_distance_cache[x.id])
-        for x in embeddings[:top_n]
-    ]
+    embeddings = fetch_all_embeddings(cursor)
+    with Timer("calculating cosine distances"):
+        embeddings_with_distance = [
+            EmbeddingWithDistance(embedding=x, distance=cosine(x.vector, query))
+            for x in embeddings
+        ]
+    embeddings_with_distance.sort(key=lambda x: x.distance)
+    return embeddings_with_distance[:top_n]
 
 
 @contextmanager
