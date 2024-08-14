@@ -26,17 +26,6 @@ db-init-dbs() {
     postgres:16.4
 }
 
-db-migrate-rdb() {
-  docker run \
-    --rm \
-    --link grapple-rdb:postgres \
-    -v "$PWD"/schema.sql:/var/schema.sql \
-    -e PGPASSWORD=postgres \
-    -e POSTGRES_PASSWORD=irrelevant \
-    postgres:16.4 \
-    psql -h postgres -U postgres -f /var/schema.sql
-}
-
 db-rdb-shell() {
   docker run \
     -it \
@@ -62,9 +51,6 @@ db-psql() {
 if [[ "$1" = "init" ]]; then
   shift
   db-init-dbs "$@"
-elif [[ "$1" = "migrate" ]]; then
-  shift
-  db-migrate-rdb
 elif [[ "$1" = "shell" ]]; then
   shift
   db-rdb-shell

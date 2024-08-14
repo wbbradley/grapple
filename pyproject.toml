@@ -13,11 +13,13 @@ dependencies = [
 ]
 
 [project.scripts]
-grapple = "grapple:main"
+grapple = "grapple.main:main"
 
 [tool.autoimport.common_statements]
 np = "import numpy as np"
 tqdm = "from tqdm import tqdm"
+UUID = "from uuid import UUID"
+contextmanager = "from contextlib import contextmanager"
 pprint = "from pprint import pprint"
 dataclass = "from dataclasses import dataclass"
 cosine = "from scipy.spatial.distance import cosine"
