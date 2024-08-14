@@ -1,6 +1,8 @@
+import hashlib
 import os
 import re
 import subprocess
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterator, List, NamedTuple, Optional, Tuple, Union
@@ -123,24 +125,72 @@ def process_document_sentences(
         ensure_sentence_embeddings(cursor, sentences, openai_embedding_model)
 
 
-def get_paragraphs(text: str) -> List[str]:
+def sha256_to_uuid_v4(sha256_value: str) -> uuid.UUID:
+    """Contort a SHA256 into a UUIDv4 for storage purposes."""
+    hex_value = sha256_value[:32]
+    uuid_bytes = bytearray.fromhex(hex_value)
+    uuid_bytes[6] = (uuid_bytes[6] & 0x0F) | 0x40  # Set version to 4
+    uuid_bytes[8] = (uuid_bytes[8] & 0x3F) | 0x80  # Set variant to 10
+    return uuid.UUID(bytes=bytes(uuid_bytes))
+
+
+def file_sha256(file_path: str) -> str:
+    """Hash the contents of the given file."""
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
+
+
+def str_sha256(content: str) -> str:
+    """Hash the contents of the given string."""
+    sha256_hash = hashlib.sha256()
+    sha256_hash.update(content.encode("utf-8"))
+    return sha256_hash.hexdigest()
+
+
+class Document(BaseModel):
+    sha256: str
+    filename: str
+
+
+class Paragraph(BaseModel):
+    text: str
+    document: Document
+    index_span: Tuple[int, int]
+
+
+def get_paragraphs(document: Document, text: str) -> List[Paragraph]:
+    text = text.strip()
     start = 0
     i = 0
     newline_count = 0
-    paragraphs = []
+    paragraphs: List[Paragraph] = []
+
+    def add_paragraph_text(paragraph_text: str, start: int, end: int) -> None:
+        """Maybe append to paragraphs."""
+        paragraph_text = re.sub(r"\s+", " ", paragraph_text).strip()
+        if not paragraph_text:
+            return
+
+        paragraph = Paragraph(
+            text=paragraph_text,
+            document=document,
+            index_span=(start, end),
+        )
+
+        paragraphs.append(paragraph)
+
     while i < len(text):
         if text[i] == "\n":
             newline_count += 1
             if newline_count > 1:
-                paragraph = text[start:i].strip()
+                add_paragraph_text(text[start:i], start, i)
                 start = i + 1
                 newline_count = 0
-                if paragraph:
-                    paragraphs.append(paragraph)
         i += 1
-    final_paragraph = text[start:i].strip()
-    if final_paragraph:
-        paragraphs.append(final_paragraph)
+    add_paragraph_text(text[start:i], start, i)
     return paragraphs
 
 
@@ -151,14 +201,18 @@ def process_document_paragraphs(
 ) -> None:
     with open(file_path, "r") as file:
         text = file.read()
+    document = Document(filename=file_path, sha256=str_sha256(text))
 
-    paragraphs = get_paragraphs(text)
+    paragraphs = get_paragraphs(document, text)
 
-    with db_cursor() as cursor:
-        with Timer("run nlp on each paragraph"):
+    with Timer("run nlp on each paragraph"):
+        with db_cursor() as cursor:
             for paragraph in paragraphs:
-                doc: spacy.tokens.doc.Doc = nlp(paragraph)
-                triplets = get_triplets(cursor, paragraph)
+                ensure_semantic_triples_for_paragraph(cursor, paragraph)
+
+
+def ensure_semantic_triples_for_paragraph(cursor: Cursor, paragraph: Paragraph) -> None:
+    pass
 
 
 class SemanticTriple(BaseModel):
@@ -172,7 +226,7 @@ class SemanticTriples(BaseModel):
     triples: List[SemanticTriple]
 
 
-def get_triplets(paragraph: str) -> List[SemanticTriple]:
+def get_triples(paragraph: str) -> List[SemanticTriple]:
     completion = openai_client.beta.chat.completions.parse(
         model="gpt-4o-2024-08-06",
         messages=[
