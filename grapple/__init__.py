@@ -106,7 +106,7 @@ def upsert_embedding(cursor, sentence: str, model: str, vector: Vector) -> None:
     cursor.connection.commit()
 
 
-def process_document(
+def process_document_sentences(
     nlp: spacy.language.Language,
     file_path: str,
     openai_embedding_model: str,
@@ -121,6 +121,76 @@ def process_document(
 
     with db_cursor() as cursor:
         ensure_sentence_embeddings(cursor, sentences, openai_embedding_model)
+
+
+def get_paragraphs(text: str) -> List[str]:
+    start = 0
+    i = 0
+    newline_count = 0
+    paragraphs = []
+    while i < len(text):
+        if text[i] == "\n":
+            newline_count += 1
+            if newline_count > 1:
+                paragraph = text[start:i].strip()
+                start = i + 1
+                newline_count = 0
+                if paragraph:
+                    paragraphs.append(paragraph)
+        i += 1
+    final_paragraph = text[start:i].strip()
+    if final_paragraph:
+        paragraphs.append(final_paragraph)
+    return paragraphs
+
+
+def process_document_paragraphs(
+    nlp: spacy.language.Language,
+    file_path: str,
+    openai_embedding_model: str,
+) -> None:
+    with open(file_path, "r") as file:
+        text = file.read()
+
+    paragraphs = get_paragraphs(text)
+
+    with db_cursor() as cursor:
+        with Timer("run nlp on each paragraph"):
+            for paragraph in paragraphs:
+                doc: spacy.tokens.doc.Doc = nlp(paragraph)
+                triplets = get_triplets(cursor, paragraph)
+
+
+class SemanticTriple(BaseModel):
+    subject: str
+    predicate: str
+    object: str
+    summary: str
+
+
+class SemanticTriples(BaseModel):
+    triples: List[SemanticTriple]
+
+
+def get_triplets(paragraph: str) -> List[SemanticTriple]:
+    completion = openai_client.beta.chat.completions.parse(
+        model="gpt-4o-2024-08-06",
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"Context:\n\n--- BEGIN ---\n{paragraph}\n--- END ---\n\nInstruction: "
+                    f"Please examine the text within the BEGIN and END blocks above and "
+                    f"extract semantic triples for all information contained therein, also include a summary "
+                    f"describing the found fact."
+                ),
+            }
+        ],
+        response_format=SemanticTriples,
+    )
+    if parsed := completion.choices[0].message.parsed:
+        return parsed.triples
+    return []
 
 
 def ensure_sentence_embeddings(
@@ -184,8 +254,8 @@ def download_spacy_model(model: str) -> None:
 def ingest(filename: str, openai_embedding_model: str, spacy_nlp_model: str) -> None:
     """Read a book and extract subject-predicate-object triples."""
     nlp = spacy.load(spacy_nlp_model)
-    with Timer(f"process document [filename={filename}]"):
-        process_document(nlp, filename, "text-embedding-3-large")
+    with Timer(f"process document paragraphs [filename={filename}]"):
+        process_document_paragraphs(nlp, filename, "text-embedding-3-large")
 
         # triples = extract_triples(doc)
     # store_triples(triples, driver)
