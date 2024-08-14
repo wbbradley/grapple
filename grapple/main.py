@@ -94,10 +94,9 @@ def get_text_embedding(
 def upsert_embedding(cursor, uuid: UUID, text: str, model: str, vector: Vector) -> None:
     cursor.execute(
         """
-            INSERT INTO embedding (uuid, text, model, vector, created_at)
-            VALUES (%s, %s, %s, NOW())
-            ON CONFLICT (uuid, text, model) DO NOTHING
-            RETURNING id
+            INSERT INTO embedding (uuid, text, model, vector)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (text, model) DO NOTHING
         """,
         (uuid, text, model, Json(vector)),
     )
@@ -161,28 +160,28 @@ def ensure_semantic_triples_for_paragraph(
     def _get_uuid(x: str) -> UUID:
         return get_text_embedding(cursor, x, openai_embedding_model)[0]
 
-    with cursor.connection.transaction():
-        triples: List[SemanticTriple] = get_triples(paragraph.text)
-        sql_triples: List[Tuple[UUID, UUID, UUID, UUID, UUID]] = []
-        for triple in triples:
-            sql_triples.append(
-                (
-                    paragraph.uuid,
-                    _get_uuid(triple.subject),
-                    _get_uuid(triple.predicate),
-                    _get_uuid(triple.object),
-                    _get_uuid(triple.summary),
-                )
+    # TODO: multi-pass/transact this to avoid dupes in the event of failure midway.
+    triples: List[SemanticTriple] = get_triples(paragraph.text)
+    sql_triples: List[Tuple[UUID, UUID, UUID, UUID, UUID]] = []
+    for triple in triples:
+        sql_triples.append(
+            (
+                paragraph.uuid,
+                _get_uuid(triple.subject),
+                _get_uuid(triple.predicate),
+                _get_uuid(triple.object),
+                _get_uuid(triple.summary),
             )
-            cursor.executemany(
-                """
-                INSERT INTO triple
-                    (paragraph_uuid, subject_uuid, predicate_uuid, object_uuid, summary_uuid)
-                VALUES
-                    (%s, %s, %s, %s, %s)
-                """,
-                sql_triples,
-            )
+        )
+        cursor.executemany(
+            """
+            INSERT INTO triple
+                (paragraph_uuid, subject_uuid, predicate_uuid, object_uuid, summary_uuid)
+            VALUES
+                (%s, %s, %s, %s, %s)
+            """,
+            sql_triples,
+        )
 
 
 @main.command()
