@@ -1,6 +1,5 @@
 import os
 import re
-import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,11 +7,9 @@ from typing import Any, Iterator, List, NamedTuple, Optional, Tuple, Union
 from uuid import UUID
 
 import click
-import numpy as np
 import psycopg
 import spacy
 import tiktoken
-from openai import OpenAI
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from pydantic import BaseModel
@@ -20,18 +17,12 @@ from scipy.spatial.distance import cosine  # type: ignore
 from tqdm import tqdm
 
 from grapple.document import Document
+from grapple.openai import openai_client
 from grapple.paragraph import Paragraph, get_paragraphs
 from grapple.timer import Timer
-from grapple.utils import str_sha256
+from grapple.triple import SemanticTriple, get_triples
+from grapple.utils import str_sha256, str_to_uuid
 
-# GRAPPLE_OPENAI_KEY_CMD: must be a command that prints your OpenAI API key to stdout.
-openai_client = OpenAI(
-    api_key=subprocess.check_output(
-        os.environ.get("GRAPPLE_OPENAI_KEY_CMD", "pass openai-api-key"), shell=True
-    )
-    .decode("utf-8")
-    .strip()
-)
 DEFAULT_SPACY_MODEL = "en_core_web_lg"
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 
@@ -62,53 +53,53 @@ class GraphEdge(NamedTuple):
 GraphItem = Union[GraphEdge, GraphNode]
 
 
-def get_existing_sentence_embedding(
+def get_existing_text_embedding(
     cursor: Cursor,
-    sentence: str,
+    text: str,
     openai_embedding_model: str,
-) -> Optional[Tuple[int, List[float]]]:
+) -> Optional[Tuple[UUID, List[float]]]:
+    # TODO: cache this in process.
     cursor.execute(
-        "SELECT id, vector FROM embedding WHERE sentence_text = %s AND model = %s",
-        (sentence, openai_embedding_model),
+        "SELECT uuid, vector FROM embedding WHERE text = %s AND model = %s",
+        (text, openai_embedding_model),
     )
     result = cursor.fetchone()
     if result is not None:
-        return result["id"], result["vector"]
+        return result["uuid"], result["vector"]
     return None
 
 
-def get_sentence_embedding(
+def get_text_embedding(
     cursor: Cursor,
-    sentence: str,
+    text: str,
     openai_embedding_model: str,
-) -> Vector:
-    if result := get_existing_sentence_embedding(
-        cursor, sentence, openai_embedding_model
-    ):
-        print(f"[get_sentence_embedding] found result for ({sentence}) in db")
-        return result[1]
+) -> Tuple[UUID, Vector]:
+    if result := get_existing_text_embedding(cursor, text, openai_embedding_model):
+        print(f"[get_text_embedding] found result for ({text}) in db")
+        return result
     else:
         vector = (
             openai_client.embeddings.create(
-                input=sentence,
+                input=text,
                 model=openai_embedding_model,
             )
             .data[0]
             .embedding
         )
-        upsert_embedding(cursor, sentence, openai_embedding_model, vector)
-        return vector
+        uuid = str_to_uuid(text)
+        upsert_embedding(cursor, uuid, text, openai_embedding_model, vector)
+        return uuid, vector
 
 
-def upsert_embedding(cursor, sentence: str, model: str, vector: Vector) -> None:
+def upsert_embedding(cursor, uuid: UUID, text: str, model: str, vector: Vector) -> None:
     cursor.execute(
         """
-            INSERT INTO embedding (sentence_text, model, vector, created_at)
+            INSERT INTO embedding (uuid, text, model, vector, created_at)
             VALUES (%s, %s, %s, NOW())
-            ON CONFLICT (sentence_text, model) DO NOTHING
+            ON CONFLICT (uuid, text, model) DO NOTHING
             RETURNING id
         """,
-        (sentence, model, Json(vector)),
+        (uuid, text, model, Json(vector)),
     )
     cursor.connection.commit()
 
@@ -138,17 +129,17 @@ def process_document_paragraphs(
     with open(file_path, "r") as file:
         text = file.read()
     document = Document(filename=file_path, sha256=str_sha256(text))
-
     paragraphs = get_paragraphs(document, text)
-
     with Timer("run nlp on each paragraph"):
         with db_cursor() as cursor:
             for paragraph in paragraphs:
-                ensure_semantic_triples_for_paragraph(cursor, paragraph)
+                ensure_semantic_triples_for_paragraph(
+                    cursor, paragraph, openai_embedding_model
+                )
 
 
 def paragraph_exists_in_db(cursor: Cursor, paragraph_uuid: UUID) -> bool:
-    # Paragraphs use content-addressable sigils in the db to indicate whether they've been processed.
+    # Paragraphs use content-addressable sentinels in the db to indicate whether they've been processed.
     result = cursor.execute(
         "SELECT COUNT(*) FROM paragraph WHERE uuid=%s", (paragraph_uuid,)
     ).fetchone()
@@ -158,17 +149,40 @@ def paragraph_exists_in_db(cursor: Cursor, paragraph_uuid: UUID) -> bool:
     return matching_paragraph_count != 0
 
 
-def ensure_semantic_triples_for_paragraph(cursor: Cursor, paragraph: Paragraph) -> None:
+def ensure_semantic_triples_for_paragraph(
+    cursor: Cursor,
+    paragraph: Paragraph,
+    openai_embedding_model: str,
+) -> None:
     if paragraph_exists_in_db(cursor, paragraph.uuid):
+        # Paragraph has already been processed, skip.
         return
 
-    # Paragraph has not yet been processed, proceed.
-    inner_tx: psycopg.Transaction
-    with cursor.connection.transaction() as inner_tx:
+    def _get_uuid(x: str) -> UUID:
+        return get_text_embedding(cursor, x, openai_embedding_model)[0]
+
+    with cursor.connection.transaction():
         triples: List[SemanticTriple] = get_triples(paragraph.text)
+        sql_triples: List[Tuple[UUID, UUID, UUID, UUID, UUID]] = []
         for triple in triples:
-            cursor.execute("INSERT INTO triple")
-            assert False
+            sql_triples.append(
+                (
+                    paragraph.uuid,
+                    _get_uuid(triple.subject),
+                    _get_uuid(triple.predicate),
+                    _get_uuid(triple.object),
+                    _get_uuid(triple.summary),
+                )
+            )
+            cursor.executemany(
+                """
+                INSERT INTO triple
+                    (paragraph_uuid, subject_uuid, predicate_uuid, object_uuid, summary_uuid)
+                VALUES
+                    (%s, %s, %s, %s, %s)
+                """,
+                sql_triples,
+            )
 
 
 @main.command()
@@ -185,38 +199,6 @@ def migrate() -> None:
         cursor.connection.commit()
 
 
-class SemanticTriple(BaseModel):
-    subject: str
-    predicate: str
-    object: str
-    summary: str
-
-
-class SemanticTriples(BaseModel):
-    triples: List[SemanticTriple]
-
-
-def get_triples(paragraph: str) -> List[SemanticTriple]:
-    completion = openai_client.beta.chat.completions.parse(
-        model="gpt-4o-2024-08-06",
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"Context:\n\n--- BEGIN ---\n{paragraph}\n--- END ---\n\nInstruction: "
-                    f"Please examine the text within the BEGIN and END blocks above and "
-                    f"extract semantic triples for all information contained therein, also include a summary "
-                    f"describing the found fact."
-                ),
-            }
-        ],
-        response_format=SemanticTriples,
-    )
-    if parsed := completion.choices[0].message.parsed:
-        return parsed.triples
-    return []
-
-
 def ensure_sentence_embeddings(
     cursor: Cursor,
     sentences: List[spacy.tokens.span.Span],
@@ -230,7 +212,7 @@ def ensure_sentence_embeddings(
             # Skip super-long sentences.
             # print(f"skipping sentence {sentence_text} because it has too many tokens")
             continue
-        if get_existing_sentence_embedding(cursor, sentence_text, model):
+        if get_existing_text_embedding(cursor, sentence_text, model):
             # print(f"skipping sentence {sentence_text} because it already exists in db")
             continue
         chunk.append(sentence_text)
@@ -262,7 +244,8 @@ def bulk_upsert_embeddings(
         ).data
     ]
     for sentence, vector in zip(sentences, vectors):
-        upsert_embedding(cursor, sentence, model, vector)
+        uuid = str_to_uuid(sentence)
+        upsert_embedding(cursor, uuid, sentence, model, vector)
 
 
 @main.command()
@@ -281,16 +264,6 @@ def ingest(filename: str, openai_embedding_model: str, spacy_nlp_model: str) -> 
     with Timer(f"process document paragraphs [filename={filename}]"):
         process_document_paragraphs(nlp, filename, "text-embedding-3-large")
 
-        # triples = extract_triples(doc)
-    # store_triples(triples, driver)
-
-
-def normalize(v: np.array) -> np.array:
-    norm = np.linalg.norm(v)
-    if norm != 0:
-        return v / norm
-    return v
-
 
 @main.command()
 @click.option("--openai-embedding-model", default=DEFAULT_OPENAI_EMBEDDING_MODEL)
@@ -303,11 +276,11 @@ def query(openai_embedding_model: str) -> None:
     while True:
         query_str = input("Enter your query: ")
         with db_cursor() as cursor:
-            query_embedding: Vector = get_sentence_embedding(
+            query_embedding: Vector = get_text_embedding(
                 cursor,
                 query_str,
                 openai_embedding_model,
-            )
+            )[1]
             embeddings_with_distance = get_k_nearest_embeddings(
                 cursor,
                 query_embedding,
@@ -315,12 +288,12 @@ def query(openai_embedding_model: str) -> None:
             )
 
         for ewd in embeddings_with_distance:
-            print(f"{ewd.distance}: {ewd.embedding.sentence_text}")
+            print(f"{ewd.distance}: {ewd.embedding.text}")
 
 
 class Embedding(BaseModel):
     id: int
-    sentence_text: str
+    text: str
     model: str
     vector: List[float]
 

@@ -1,13 +1,13 @@
 BEGIN;
 
 CREATE TABLE embedding (
-  id SERIAL PRIMARY KEY,
-  sentence_text TEXT NOT NULL,
+  uuid UUID PRIMARY KEY,
+  text TEXT NOT NULL,
   model TEXT NOT NULL,
   vector JSONB NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
-CREATE UNIQUE INDEX ix_embedding ON embedding (sentence_text, model);
+CREATE UNIQUE INDEX ix_embedding ON embedding (text, model);
 
 CREATE TABLE document (
   uuid UUID PRIMARY KEY,
@@ -27,10 +27,10 @@ CREATE TABLE triple (
   id SERIAL PRIMARY KEY,
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
   paragraph_uuid UUID,
-  subject TEXT NOT NULL,
-  predicate TEXT NOT NULL,
-  object TEXT NOT NULL,
-  summary TEXT NOT NULL
+  subject UUID NOT NULL,
+  predicate UUID NOT NULL,
+  object UUID NOT NULL,
+  summary UUID NOT NULL
 );
 
 -- CREATE TABLE paragraph_instance (
