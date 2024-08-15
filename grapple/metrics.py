@@ -33,4 +33,4 @@ def metrics_count(
     metric: str, value: float = 1, tags: Optional[Dict[str, str]] = None
 ) -> None:
     # Track custom metrics
-    client.send_metric(metric, value, "count", tags)
+    client.send_metric(metric, value, "count", None)  #  tags)

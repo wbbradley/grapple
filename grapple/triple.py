@@ -39,5 +39,6 @@ def get_triples(paragraph: str) -> List[SemanticTriple]:
         response_format=SemanticTriples,
     )
     if parsed := completion.choices[0].message.parsed:
+        metrics_count("triples.parsed")
         return parsed.triples
     return []

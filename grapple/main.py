@@ -83,10 +83,13 @@ def get_text_embedding(
     openai_embedding_model: str,
 ) -> Tuple[UUID, Vector]:
     if result := get_existing_text_embedding(cursor, text, openai_embedding_model):
+        metrics_count("embedding.cache.hit")
         return result
     else:
+        metrics_count("embedding.cache.miss")
         metrics_count(
             "embeddings.create",
+            value=1,
             tags={"provider": "openai", "model": openai_embedding_model},
         )
         vector = (
@@ -117,7 +120,6 @@ def upsert_embedding(cursor, uuid: UUID, text: str, model: str, vector: Vector) 
         """,
         (uuid, text, model, Json(vector)),
     )
-    cursor.connection.commit()
 
 
 def process_document_sentences(
@@ -148,10 +150,12 @@ def process_document_paragraphs(
     paragraphs = get_paragraphs(document, text)
     with Timer("run nlp on each paragraph"):
         with db_cursor() as cursor:
-            for paragraph in paragraphs:
+            for paragraph in tqdm(paragraphs):
                 ensure_semantic_triples_for_paragraph(
                     cursor, paragraph, openai_embedding_model
                 )
+                metrics_count("db.commit")
+                cursor.connection.commit()
 
 
 def paragraph_exists_in_db(cursor: Cursor, paragraph_uuid: UUID) -> bool:
@@ -181,6 +185,7 @@ def ensure_semantic_triples_for_paragraph(
     triples: List[SemanticTriple] = get_triples(paragraph.text)
     sql_triples: List[Tuple[UUID, UUID, UUID, UUID, UUID]] = []
     for triple in triples:
+        print(triple.summary)
         sql_triples.append(
             (
                 paragraph.uuid,
@@ -190,7 +195,6 @@ def ensure_semantic_triples_for_paragraph(
                 _get_uuid(triple.summary),
             )
         )
-    cursor
     for triple in triples:
         cursor.executemany(
             """
@@ -201,6 +205,9 @@ def ensure_semantic_triples_for_paragraph(
             """,
             sql_triples,
         )
+
+    # Mark this paragraph as done.
+    cursor.execute("INSERT INTO paragraph (uuid) VALUES (%s)", (paragraph.uuid,))
 
 
 @main.command()
