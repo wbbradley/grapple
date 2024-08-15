@@ -1,9 +1,10 @@
 import os
 import re
+from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, List, NamedTuple, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Tuple, Union
 from uuid import UUID
 
 import click
@@ -37,6 +38,14 @@ def main() -> None:
     pass
 
 
+_metrics: Dict[str, int] = defaultdict(int)
+
+
+def metrics_count(metric: str, tags: List[str]) -> None:
+    # Track custom metrics
+    _metrics[f"{metric}|{','.join(tags)}"] += 1
+
+
 class GraphNode(NamedTuple):
     id: str
     description: str
@@ -53,19 +62,26 @@ class GraphEdge(NamedTuple):
 GraphItem = Union[GraphEdge, GraphNode]
 
 
+_text_embeddings_cache: Dict[str, Tuple[UUID, List[float]]] = {}
+
+
 def get_existing_text_embedding(
     cursor: Cursor,
     text: str,
     openai_embedding_model: str,
 ) -> Optional[Tuple[UUID, List[float]]]:
-    # TODO: cache this in process.
+    return_val = _text_embeddings_cache.get(text)
+    if return_val is not None:
+        return return_val
+
     cursor.execute(
         "SELECT uuid, vector FROM embedding WHERE text = %s AND model = %s",
         (text, openai_embedding_model),
     )
     result = cursor.fetchone()
     if result is not None:
-        return result["uuid"], result["vector"]
+        return_val = _text_embeddings_cache[text] = (result["uuid"], result["vector"])
+        return return_val
     return None
 
 
@@ -75,9 +91,11 @@ def get_text_embedding(
     openai_embedding_model: str,
 ) -> Tuple[UUID, Vector]:
     if result := get_existing_text_embedding(cursor, text, openai_embedding_model):
-        print(f"[get_text_embedding] found result for ({text}) in db")
         return result
     else:
+        metrics_count(
+            "embeddings.create", ["provider:openai", f"model:{openai_embedding_model}"]
+        )
         vector = (
             openai_client.embeddings.create(
                 input=text,
@@ -87,7 +105,13 @@ def get_text_embedding(
             .embedding
         )
         uuid = str_to_uuid(text)
+
+        # Install this embedding into the cache.
+        _text_embeddings_cache[text] = (uuid, vector)
+
+        # Also emplace the embedding into the db.
         upsert_embedding(cursor, uuid, text, openai_embedding_model, vector)
+
         return uuid, vector
 
 
@@ -173,6 +197,8 @@ def ensure_semantic_triples_for_paragraph(
                 _get_uuid(triple.summary),
             )
         )
+    cursor
+    for triple in triples:
         cursor.executemany(
             """
             INSERT INTO triple
@@ -378,4 +404,8 @@ if __name__ == "__main__":
     # Pipelines:
     # filename -> source -> doc -> chunks -> triplets with embeddings and summaries -> storage
     # query -> embedding -> vector query -> gather related edges and nodes -> RAG prompt with query
-    main()
+    try:
+        main()
+    finally:
+        if os.environ.get("GRAPPLE_STATS"):
+            print("\n".join(f"{k}: {v}" for k, v in _metrics.items()))

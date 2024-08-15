@@ -27,10 +27,10 @@ CREATE TABLE triple (
   id SERIAL PRIMARY KEY,
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
   paragraph_uuid UUID,
-  subject UUID NOT NULL,
-  predicate UUID NOT NULL,
-  object UUID NOT NULL,
-  summary UUID NOT NULL
+  subject_uuid UUID NOT NULL,
+  predicate_uuid UUID NOT NULL,
+  object_uuid UUID NOT NULL,
+  summary_uuid UUID NOT NULL
 );
 
 -- CREATE TABLE paragraph_instance (
