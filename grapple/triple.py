@@ -2,6 +2,7 @@ from typing import List
 
 from pydantic import BaseModel
 
+from grapple.metrics import metrics_count
 from grapple.openai import openai_client
 
 
@@ -17,8 +18,13 @@ class SemanticTriples(BaseModel):
 
 
 def get_triples(paragraph: str) -> List[SemanticTriple]:
+    model = "gpt-4o-2024-08-06"
+    metrics_count(
+        "beta.chat.completions.parse",
+        tags={"provider": "openai", "model": model},
+    )
     completion = openai_client.beta.chat.completions.parse(
-        model="gpt-4o-2024-08-06",
+        model=model,
         messages=[
             {
                 "role": "user",

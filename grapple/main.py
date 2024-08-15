@@ -1,6 +1,5 @@
 import os
 import re
-from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +17,7 @@ from scipy.spatial.distance import cosine  # type: ignore
 from tqdm import tqdm
 
 from grapple.document import Document
+from grapple.metrics import metrics_count
 from grapple.openai import openai_client
 from grapple.paragraph import Paragraph, get_paragraphs
 from grapple.timer import Timer
@@ -36,14 +36,6 @@ Vector = List[float]
 @click.group()
 def main() -> None:
     pass
-
-
-_metrics: Dict[str, int] = defaultdict(int)
-
-
-def metrics_count(metric: str, tags: List[str]) -> None:
-    # Track custom metrics
-    _metrics[f"{metric}|{','.join(tags)}"] += 1
 
 
 class GraphNode(NamedTuple):
@@ -94,7 +86,8 @@ def get_text_embedding(
         return result
     else:
         metrics_count(
-            "embeddings.create", ["provider:openai", f"model:{openai_embedding_model}"]
+            "embeddings.create",
+            tags={"provider": "openai", "model": openai_embedding_model},
         )
         vector = (
             openai_client.embeddings.create(
@@ -261,6 +254,11 @@ def bulk_upsert_embeddings(
 ):
     if len(sentences) == 0:
         return
+    metrics_count(
+        "embeddings.create",
+        len(sentences),
+        tags={"provider": "openai", "model": model},
+    )
     vectors = [
         x.embedding
         for x in openai_client.embeddings.create(
@@ -401,11 +399,4 @@ def fetch_nearest_graph_items(edge_embedding: Vector, top_n: int) -> List[GraphI
 
 
 if __name__ == "__main__":
-    # Pipelines:
-    # filename -> source -> doc -> chunks -> triplets with embeddings and summaries -> storage
-    # query -> embedding -> vector query -> gather related edges and nodes -> RAG prompt with query
-    try:
-        main()
-    finally:
-        if os.environ.get("GRAPPLE_STATS"):
-            print("\n".join(f"{k}: {v}" for k, v in _metrics.items()))
+    main()
