@@ -20,6 +20,7 @@ CREATE TABLE document (
 -- uuid is based on a SHA256 of the paragraph text.
 CREATE TABLE paragraph (
   uuid UUID PRIMARY KEY,
+  text TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
 

@@ -29,12 +29,15 @@ def get_triples(paragraph: str) -> List[SemanticTriple]:
             {
                 "role": "user",
                 "content": (
-                    f"Context:\n\n--- BEGIN ---\n{paragraph}\n--- END ---\n\nInstruction: "
-                    f"Please examine the text within the BEGIN and END blocks above and "
-                    f"extract semantic triples for all information contained therein, also include a summary "
-                    f"describing the found fact."
+                    "Please examine the following text and extract semantic triples for "
+                    "all information contained therein, also include a summary "
+                    "describing the found fact."
                 ),
-            }
+            },
+            {
+                "role": "user",
+                "content": paragraph,
+            },
         ],
         response_format=SemanticTriples,
     )

@@ -16,7 +16,7 @@ class Paragraph(BaseModel):
 
 
 def get_paragraphs(document: Document, text: str) -> List[Paragraph]:
-    text = text.strip()
+    text = text.strip().replace("\r\n", "\n").replace("\r", "")
     start = 0
     i = 0
     newline_count = 0
@@ -44,6 +44,8 @@ def get_paragraphs(document: Document, text: str) -> List[Paragraph]:
                 add_paragraph_text(text[start:i], start, i)
                 start = i + 1
                 newline_count = 0
+        else:
+            newline_count = 0
         i += 1
     add_paragraph_text(text[start:i], start, i)
     return paragraphs

@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from contextlib import contextmanager
@@ -31,6 +32,13 @@ DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 Cursor = psycopg.Cursor[dict[str, Any]]
 # TODO(wbbradley): Probably better to use Floats1d or np.array or some-such here.
 Vector = List[float]
+
+logging.basicConfig(
+    filename=os.path.expanduser("~/grapple.log"),
+    level=logging.INFO,
+    filemode="a",
+)
+logging.getLogger("httpx").setLevel(logging.WARN)
 
 
 @click.group()
@@ -185,7 +193,7 @@ def ensure_semantic_triples_for_paragraph(
     triples: List[SemanticTriple] = get_triples(paragraph.text)
     sql_triples: List[Tuple[UUID, UUID, UUID, UUID, UUID]] = []
     for triple in triples:
-        print(triple.summary)
+        logging.info(triple.summary)
         sql_triples.append(
             (
                 paragraph.uuid,
@@ -195,31 +203,48 @@ def ensure_semantic_triples_for_paragraph(
                 _get_uuid(triple.summary),
             )
         )
-    for triple in triples:
-        cursor.executemany(
-            """
-            INSERT INTO triple
-                (paragraph_uuid, subject_uuid, predicate_uuid, object_uuid, summary_uuid)
-            VALUES
-                (%s, %s, %s, %s, %s)
-            """,
-            sql_triples,
-        )
+    cursor.executemany(
+        """
+        INSERT INTO triple
+            (paragraph_uuid, subject_uuid, predicate_uuid, object_uuid, summary_uuid)
+        VALUES
+            (%s, %s, %s, %s, %s)
+        """,
+        sql_triples,
+    )
 
     # Mark this paragraph as done.
-    cursor.execute("INSERT INTO paragraph (uuid) VALUES (%s)", (paragraph.uuid,))
+    cursor.execute(
+        "INSERT INTO paragraph (uuid, text) VALUES (%s, %s)",
+        (
+            paragraph.uuid,
+            paragraph.text,
+        ),
+    )
+
+
+@main.command()
+@click.argument("filename")
+def show_paragraphs(filename: str) -> None:
+    with open(filename, "r") as file:
+        text = file.read()
+    document = Document(filename=filename, sha256=str_sha256(text))
+    paragraphs = get_paragraphs(document, text)
+    for paragraph in paragraphs:
+        print(paragraph.text)
+        input("Press Enter.")
 
 
 @main.command()
 def migrate() -> None:
     path = Path(__file__).resolve().parent.parent / "schema.sql"
 
-    print(f"[migrate] opening {path}...")
+    logging.info(f"[migrate] opening {path}...")
     with open(path, "rt") as f:
-        print(f"[migrate] read {path}...")
+        logging.info(f"[migrate] read {path}...")
         content = f.read()
     with db_cursor() as cursor:
-        print(f"[migrate] executing {path}...")
+        logging.info(f"[migrate] executing {path}...")
         cursor.execute(content)
         cursor.connection.commit()
 
@@ -235,10 +260,10 @@ def ensure_sentence_embeddings(
         sentence_text = re.sub(r"\s+", " ", sentence.text).strip()
         if num_tokens_from_string(sentence_text, "cl100k_base") > 8000:
             # Skip super-long sentences.
-            # print(f"skipping sentence {sentence_text} because it has too many tokens")
+            # logging.info(f"skipping sentence {sentence_text} because it has too many tokens")
             continue
         if get_existing_text_embedding(cursor, sentence_text, model):
-            # print(f"skipping sentence {sentence_text} because it already exists in db")
+            # logging.info(f"skipping sentence {sentence_text} because it already exists in db")
             continue
         chunk.append(sentence_text)
         if len(chunk) >= chunk_size:
@@ -318,7 +343,7 @@ def query(openai_embedding_model: str) -> None:
             )
 
         for ewd in embeddings_with_distance:
-            print(f"{ewd.distance}: {ewd.embedding.text}")
+            logging.info(f"{ewd.distance}: {ewd.embedding.text}")
 
 
 class Embedding(BaseModel):
