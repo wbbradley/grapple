@@ -20,7 +20,7 @@ from grapple.metrics import metrics_count
 from grapple.openai import openai_client
 from grapple.paragraph import Paragraph, get_paragraphs
 from grapple.timer import Timer
-from grapple.triple import SemanticTriple, get_triples
+from grapple.triple import SemanticTriple, gather_related_triples, get_triples
 from grapple.types import Cursor, Vector
 from grapple.utils import str_sha256, str_to_uuid
 
@@ -314,11 +314,6 @@ def ingest(filename: str, openai_embedding_model: str) -> None:
 @main.command()
 @click.option("--openai-embedding-model", default=DEFAULT_OPENAI_EMBEDDING_MODEL)
 def query(openai_embedding_model: str) -> None:
-    # filename -> source -> doc -> chunks -> triplets with embeddings and summaries -> storage
-    # query -> embedding -> vector query -> gather related edges and nodes -> RAG prompt with query
-
-    # _driver = GraphDatabase.driver("bolt://localhost:7687")
-
     while True:
         query_str = input("Enter your query: ")
         with db_cursor() as cursor:

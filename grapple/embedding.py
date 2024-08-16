@@ -3,9 +3,10 @@ from typing import List
 from uuid import UUID
 
 from pydantic import BaseModel
-from scipy.spatial.distance import cosine
+from scipy.spatial.distance import cosine  # type: ignore
 
-Vector = List[float]
+from grapple.timer import Timer
+from grapple.types import Cursor, Vector
 
 
 class Embedding(BaseModel):

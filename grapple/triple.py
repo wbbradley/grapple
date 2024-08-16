@@ -2,8 +2,10 @@ from typing import List
 
 from pydantic import BaseModel
 
+from grapple.embedding import EmbeddingWithDistance
 from grapple.metrics import metrics_count
 from grapple.openai import openai_client
+from grapple.types import Cursor
 
 
 class SemanticTriple(BaseModel):
@@ -45,3 +47,9 @@ def get_triples(paragraph: str) -> List[SemanticTriple]:
         metrics_count("triples.parsed")
         return parsed.triples
     return []
+
+
+def gather_related_triples(
+    cursor: Cursor, embeddings_with_distance: List[EmbeddingWithDistance]
+) -> List[SemanticTriple]:
+    raise NotImplementedError()
