@@ -2,7 +2,6 @@ import logging
 import os
 import re
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Tuple, Union
 from uuid import UUID
@@ -13,25 +12,21 @@ import spacy
 import tiktoken
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
-from pydantic import BaseModel
-from scipy.spatial.distance import cosine  # type: ignore
 from tqdm import tqdm
 
 from grapple.document import Document
+from grapple.embedding import EmbeddingWithDistance, get_k_nearest_embeddings
 from grapple.metrics import metrics_count
 from grapple.openai import openai_client
 from grapple.paragraph import Paragraph, get_paragraphs
 from grapple.timer import Timer
 from grapple.triple import SemanticTriple, get_triples
+from grapple.types import Cursor, Vector
 from grapple.utils import str_sha256, str_to_uuid
 
 DEFAULT_SPACY_MODEL = "en_core_web_lg"
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 
-# TODO(wbbradley): We are using dictionaries for all cursors at the moment. Clean this up later.
-Cursor = psycopg.Cursor[dict[str, Any]]
-# TODO(wbbradley): Probably better to use Floats1d or np.array or some-such here.
-Vector = List[float]
 
 logging.basicConfig(
     filename=os.path.expanduser("~/grapple.log"),
@@ -332,69 +327,16 @@ def query(openai_embedding_model: str) -> None:
                 query_str,
                 openai_embedding_model,
             )[1]
-            embeddings_with_distance = get_k_nearest_embeddings(
-                cursor,
-                query_embedding,
-                top_n=10,
+            embeddings_with_distance: List[EmbeddingWithDistance] = (
+                get_k_nearest_embeddings(
+                    cursor,
+                    query_embedding,
+                    top_n=10,
+                )
             )
-
+            gather_related_triples(cursor, embeddings_with_distance)
         for ewd in embeddings_with_distance:
             logging.info(f"{ewd.distance}: {ewd.embedding.text}")
-
-
-class Embedding(BaseModel):
-    id: int
-    text: str
-    model: str
-    vector: List[float]
-
-
-@dataclass
-class EmbeddingWithDistance:
-    embedding: Embedding
-    distance: float
-
-
-def make_embedding_with_distance(
-    query: Vector, embedding: Embedding
-) -> EmbeddingWithDistance:
-    return EmbeddingWithDistance(
-        embedding=embedding, distance=cosine(embedding.vector, query)
-    )
-
-
-_embeddings: List[Embedding] = []
-
-
-def fetch_all_embeddings(cursor: Cursor) -> List[Embedding]:
-    # Cached once per process.
-    if _embeddings:
-        return _embeddings
-
-    with Timer("gather all embeddings"):
-        cursor.execute(
-            """
-                SELECT id, sentence_text, model, vector
-                FROM embedding
-                ORDER BY created_at
-            """
-        )
-        for row in cursor:
-            _embeddings.append(Embedding.parse_obj(row))
-        return _embeddings
-
-
-def get_k_nearest_embeddings(
-    cursor: Cursor, query: Vector, top_n: int
-) -> List[EmbeddingWithDistance]:
-    embeddings = fetch_all_embeddings(cursor)
-    with Timer("calculating cosine distances"):
-        embeddings_with_distance = [
-            EmbeddingWithDistance(embedding=x, distance=cosine(x.vector, query))
-            for x in embeddings
-        ]
-    embeddings_with_distance.sort(key=lambda x: x.distance)
-    return embeddings_with_distance[:top_n]
 
 
 @contextmanager
@@ -416,14 +358,6 @@ def testdb() -> None:
         cursor.execute("SELECT 1, 2 UNION SELECT 3, 4")
         result = cursor.fetchone()
         print(result)
-
-
-def fetch_embedding(text: str) -> Vector:
-    raise NotImplementedError()
-
-
-def fetch_nearest_graph_items(edge_embedding: Vector, top_n: int) -> List[GraphItem]:
-    raise NotImplementedError()
 
 
 if __name__ == "__main__":
