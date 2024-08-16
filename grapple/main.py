@@ -148,7 +148,6 @@ def process_document_sentences(
 
 
 def process_document_paragraphs(
-    nlp: spacy.language.Language,
     file_path: str,
     openai_embedding_model: str,
 ) -> None:
@@ -156,14 +155,13 @@ def process_document_paragraphs(
         text = file.read()
     document = Document(filename=file_path, sha256=str_sha256(text))
     paragraphs = get_paragraphs(document, text)
-    with Timer("run nlp on each paragraph"):
-        with db_cursor() as cursor:
-            for paragraph in tqdm(paragraphs):
-                ensure_semantic_triples_for_paragraph(
-                    cursor, paragraph, openai_embedding_model
-                )
-                metrics_count("db.commit")
-                cursor.connection.commit()
+    with db_cursor() as cursor:
+        for paragraph in tqdm(paragraphs):
+            ensure_semantic_triples_for_paragraph(
+                cursor, paragraph, openai_embedding_model
+            )
+            metrics_count("db.commit")
+            cursor.connection.commit()
 
 
 def paragraph_exists_in_db(cursor: Cursor, paragraph_uuid: UUID) -> bool:
@@ -312,12 +310,10 @@ def download_spacy_model(model: str) -> None:
 @main.command(name="ingest")
 @click.argument("filename")
 @click.option("--openai-embedding-model", default=DEFAULT_OPENAI_EMBEDDING_MODEL)
-@click.option("--spacy-nlp-model", default=DEFAULT_SPACY_MODEL)
-def ingest(filename: str, openai_embedding_model: str, spacy_nlp_model: str) -> None:
+def ingest(filename: str, openai_embedding_model: str) -> None:
     """Read a book and extract subject-predicate-object triples."""
-    nlp = spacy.load(spacy_nlp_model)
     with Timer(f"process document paragraphs [filename={filename}]"):
-        process_document_paragraphs(nlp, filename, "text-embedding-3-large")
+        process_document_paragraphs(filename, "text-embedding-3-large")
 
 
 @main.command()
