@@ -16,7 +16,7 @@ from psycopg.rows import dict_row
 from tqdm import tqdm
 
 from grapple.document import Document
-from grapple.embedding import EmbeddingWithDistance, get_k_nearest_embeddings
+from grapple.embedding import Embedding, EmbeddingWithDistance, get_k_nearest_embeddings
 from grapple.metrics import metrics_count
 from grapple.openai import openai_client
 from grapple.paragraph import Paragraph, get_paragraphs
@@ -57,14 +57,14 @@ class GraphEdge(NamedTuple):
 GraphItem = Union[GraphEdge, GraphNode]
 
 
-_text_embeddings_cache: Dict[str, Tuple[UUID, np.array]] = {}
+_text_embeddings_cache: Dict[str, Embedding] = {}
 
 
 def get_existing_text_embedding(
     cursor: Cursor,
     text: str,
     openai_embedding_model: str,
-) -> Optional[Tuple[UUID, List[float]]]:
+) -> Optional[Embedding]:
     return_val = _text_embeddings_cache.get(text)
     if return_val is not None:
         return return_val
@@ -84,6 +84,7 @@ def get_text_embedding(
     cursor: Cursor,
     text: str,
     openai_embedding_model: str,
+    tags: List[str],
 ) -> Tuple[UUID, Vector]:
     if result := get_existing_text_embedding(cursor, text, openai_embedding_model):
         metrics_count("embedding.cache.hit")

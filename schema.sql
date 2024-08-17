@@ -11,6 +11,19 @@ CREATE TABLE embedding (
 );
 CREATE UNIQUE INDEX ix_embedding ON embedding (text, model);
 
+CREATE TABLE tag (
+  id BIGSERIAL PRIMARY KEY,
+  text TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE TABLE embedding_tag (
+  embedding_uuid UUID NOT NULL,
+  tag_id BIGINT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+CREATE UNIQUE INDEX ix_embedding_tag ON embedding_tag (embedding_uuid, tag_id);
+
 CREATE TABLE document (
   uuid UUID PRIMARY KEY,
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,

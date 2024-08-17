@@ -25,3 +25,8 @@ pprint = "from pprint import pprint"
 dataclass = "from dataclasses import dataclass"
 cosine = "from scipy.spatial.distance import cosine"
 BaseModel = "from pydantic import BaseModel"
+Embedding = "from grapple.embedding import Embedding"
+Vector = "from grapple.types import Vector"
+Tag = "from grapple.tag import Tag"
+Timer = "from grapple.timer import Timer"
+

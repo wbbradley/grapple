@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel
 from scipy.spatial.distance import cosine  # type: ignore
 
+from grapple.tag import Tag
 from grapple.timer import Timer
 from grapple.types import Cursor, Vector
 
@@ -13,7 +14,8 @@ class Embedding(BaseModel):
     uuid: UUID
     text: str
     model: str
-    vector: List[float]
+    vector: Vector
+    tags: List[Tag]
 
 
 @dataclass
