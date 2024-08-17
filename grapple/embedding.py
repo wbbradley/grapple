@@ -2,10 +2,9 @@ from dataclasses import dataclass
 from typing import List
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from scipy.spatial.distance import cosine  # type: ignore
 
-from grapple.tag import Tag
 from grapple.timer import Timer
 from grapple.types import Cursor, Vector
 
@@ -15,7 +14,9 @@ class Embedding(BaseModel):
     text: str
     model: str
     vector: Vector
-    tags: List[Tag]
+
+    # Facilitate loading np.array into vector.
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 @dataclass

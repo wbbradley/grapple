@@ -7,8 +7,8 @@ PG_IMAGE='pgvector/pgvector:pg16'
 db-init-dbs() {
   if [[ "$1" = '-f' ]]; then
     shift
-    docker rm -f "${containers[@]}"
-    docker wait "${containers[@]}"
+    docker rm -f "${containers[@]}" 2>/dev/null >&2
+    docker wait "${containers[@]}" 2>/dev/null >&2
   fi
 
   docker run \

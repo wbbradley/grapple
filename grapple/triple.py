@@ -1,11 +1,11 @@
+from pprint import pprint
 from typing import List
 
 from pydantic import BaseModel
 
-from grapple.embedding import EmbeddingWithDistance
 from grapple.metrics import metrics_count
 from grapple.openai import openai_client
-from grapple.types import Cursor
+from grapple.types import Cursor, Vector
 
 
 class SemanticTriple(BaseModel):
@@ -50,7 +50,44 @@ def get_triples(paragraph: str) -> List[SemanticTriple]:
 
 
 def gather_related_triples(
-    cursor: Cursor, embeddings_with_distance: List[EmbeddingWithDistance]
+    cursor: Cursor,
+    query_embedding: Vector,
 ) -> List[SemanticTriple]:
-    cursor.execute
-    raise NotImplementedError()
+    associated_triples = cursor.execute(
+        """
+        WITH nearest_embeddings AS (
+          SELECT uuid, (vector <-> %s) AS distance
+          FROM embedding
+          ORDER BY distance
+          LIMIT %s
+        ), enriched_triples AS (
+          SELECT
+            t.id,
+            t.created_at,
+            p.text AS paragraph_text,
+            es.text AS subject_text,
+            ep.text AS predicate_text,
+            eo.text AS object_text,
+            esu.text AS summary_text,
+            t.summary_uuid AS summary_uuid
+          FROM triple t
+          LEFT JOIN paragraph p ON t.paragraph_uuid = p.uuid
+          LEFT JOIN embedding es ON t.subject_uuid = es.uuid
+          LEFT JOIN embedding ep ON t.predicate_uuid = ep.uuid
+          LEFT JOIN embedding eo ON t.object_uuid = eo.uuid
+          LEFT JOIN embedding esu ON t.summary_uuid = esu.uuid
+        )
+        SELECT
+           subject_text subject,
+           predicate_text predicate,
+           object_text object,
+           summary_text summary,
+           ne.distance distance
+        FROM enriched_triples et
+        JOIN nearest_embeddings ne ON et.summary_uuid = ne.uuid
+        ORDER BY et.created_at
+    """,
+        (query_embedding, 3),
+    ).fetchall()
+    pprint(associated_triples)
+    return []

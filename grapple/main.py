@@ -16,7 +16,7 @@ from psycopg.rows import dict_row
 from tqdm import tqdm
 
 from grapple.document import Document
-from grapple.embedding import Embedding, EmbeddingWithDistance, get_k_nearest_embeddings
+from grapple.embedding import Embedding
 from grapple.metrics import metrics_count
 from grapple.openai import openai_client
 from grapple.paragraph import Paragraph, get_paragraphs
@@ -59,7 +59,9 @@ _text_embeddings_cache: Dict[Tuple[str, str], Embedding] = {}
 
 
 def get_existing_text_embedding(
-    cursor: Cursor, text: str, openai_embedding_model: str
+    cursor: Cursor,
+    text: str,
+    openai_embedding_model: str,
 ) -> Optional[Embedding]:
     return_val = _text_embeddings_cache.get((text, openai_embedding_model))
     if return_val is not None:
@@ -68,15 +70,11 @@ def get_existing_text_embedding(
     cursor.execute(
         """
             SELECT
-                uuid,
-                text,
-                model,
-                vector,
-                COALESCE((
-                    SELECT json_agg(json_build_object('id', tag.id, 'text', tag.text))
-                    FROM tag t, embedding_tag et
-                    WHERE t.id=et.tag_id AND et.embedding_uuid=embedding.uuid
-                ), '[]'::json) tags
+                  uuid
+                , text
+                , model
+                , vector
+                -- , COALESCE((SELECT json_agg(json_build_object('id', t.id, 'text', t.text)) FROM tag t, embedding_tag et WHERE t.id=et.tag_id AND et.embedding_uuid=embedding.uuid), '[]'::json) tags
             FROM embedding WHERE text = %s AND model = %s
         """,
         (text, openai_embedding_model),
@@ -120,7 +118,10 @@ def get_text_embedding(
 
         # Install this embedding into the cache.
         embedding = Embedding(
-            uuid=uuid, text=text, model=openai_embedding_model, vector=vector, tags=[]
+            uuid=uuid,
+            text=text,
+            model=openai_embedding_model,
+            vector=vector,
         )
         _text_embeddings_cache[(text, openai_embedding_model)] = embedding
         # Also emplace the embedding into the db.
@@ -241,7 +242,7 @@ def migrate() -> None:
     with open(path, "rt") as f:
         logging.info(f"[migrate] read {path}...")
         content = f.read()
-    with db_cursor() as cursor:
+    with db_cursor(call_register_vector=False) as cursor:
         logging.info(f"[migrate] executing {path}...")
         cursor.execute(content)
         cursor.connection.commit()
@@ -294,7 +295,10 @@ def bulk_upsert_embeddings(cursor: Cursor, sentences: List[str], model: str) -> 
     for sentence, vector in zip(sentences, vectors):
         uuid = str_to_uuid(sentence)
         embedding = Embedding(
-            uuid=uuid, text=sentence, model=model, vector=vector, tags=[]
+            uuid=uuid,
+            text=sentence,
+            model=model,
+            vector=vector,
         )
         upsert_embedding(cursor, embedding)
 
@@ -323,17 +327,13 @@ def query(openai_embedding_model: str) -> None:
             query_embedding: Vector = get_text_embedding(
                 cursor, query_str, openai_embedding_model
             ).vector
-            embeddings_with_distance: List[EmbeddingWithDistance] = (
-                get_k_nearest_embeddings(cursor, query_embedding, top_n=10)
-            )
-            gather_related_triples(cursor, embeddings_with_distance)
-
-        for ewd in embeddings_with_distance:
-            logging.info(f"{ewd.distance}: {ewd.embedding.text}")
+            gather_related_triples(cursor, query_embedding)
 
 
 @contextmanager
-def db_cursor(row_factory: Any = dict_row) -> Iterator[Cursor]:
+def db_cursor(
+    row_factory: Any = dict_row, call_register_vector: bool = True
+) -> Iterator[Cursor]:
     with psycopg.connect(
         dbname="postgres",
         user="postgres",
@@ -341,7 +341,8 @@ def db_cursor(row_factory: Any = dict_row) -> Iterator[Cursor]:
         host="127.0.0.1",
         port="5432",
     ) as conn:
-        register_vector(conn)
+        if call_register_vector:
+            register_vector(conn)
         with conn.cursor(row_factory=row_factory) as cursor:
             yield cursor
 

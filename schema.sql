@@ -56,4 +56,30 @@ CREATE TABLE triple (
 --   index_span_end BIGINT
 -- );
 
-COMMIT
+COMMIT;
+
+        WITH nearest_embeddings AS (
+          SELECT uuid
+          FROM embedding
+          ORDER BY vector <-> "hey"
+          LIMIT 29
+        ), enriched_triples AS (
+          SELECT
+            t.id,
+            t.created_at,
+            p.text AS paragraph_text,
+            es.text AS subject_text,
+            ep.text AS predicate_text,
+            eo.text AS object_text,
+            esu.text AS summary_text
+          FROM triple t
+          LEFT JOIN paragraph p ON t.paragraph_uuid = p.uuid
+          LEFT JOIN embedding es ON t.subject_uuid = es.uuid
+          LEFT JOIN embedding ep ON t.predicate_uuid = ep.uuid
+          LEFT JOIN embedding eo ON t.object_uuid = eo.uuid
+          LEFT JOIN embedding esu ON t.summary_uuid = esu.uuid
+        )
+        SELECT *
+        FROM enriched_triples et
+        JOIN nearest_embeddings ne ON et.summary_uuid = ne.uuid
+        ORDER BY et.created_at
