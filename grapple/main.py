@@ -57,7 +57,7 @@ class GraphEdge(NamedTuple):
 GraphItem = Union[GraphEdge, GraphNode]
 
 
-_text_embeddings_cache: Dict[str, Tuple[UUID, List[float]]] = {}
+_text_embeddings_cache: Dict[str, Tuple[UUID, np.array]] = {}
 
 
 def get_existing_text_embedding(
