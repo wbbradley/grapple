@@ -29,9 +29,7 @@ DEFAULT_SPACY_MODEL = "en_core_web_lg"
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 
 logging.basicConfig(
-    filename=os.path.expanduser("~/grapple.log"),
-    level=logging.INFO,
-    filemode="a",
+    filename=os.path.expanduser("~/grapple.log"), level=logging.INFO, filemode="a"
 )
 logging.getLogger("httpx").setLevel(logging.WARN)
 
@@ -57,25 +55,37 @@ class GraphEdge(NamedTuple):
 GraphItem = Union[GraphEdge, GraphNode]
 
 
-_text_embeddings_cache: Dict[str, Embedding] = {}
+_text_embeddings_cache: Dict[Tuple[str, str], Embedding] = {}
 
 
 def get_existing_text_embedding(
-    cursor: Cursor,
-    text: str,
-    openai_embedding_model: str,
+    cursor: Cursor, text: str, openai_embedding_model: str
 ) -> Optional[Embedding]:
-    return_val = _text_embeddings_cache.get(text)
+    return_val = _text_embeddings_cache.get((text, openai_embedding_model))
     if return_val is not None:
         return return_val
 
     cursor.execute(
-        "SELECT uuid, vector FROM embedding WHERE text = %s AND model = %s",
+        """
+            SELECT
+                uuid,
+                text,
+                model,
+                vector,
+                COALESCE((
+                    SELECT json_agg(json_build_object('id', tag.id, 'text', tag.text))
+                    FROM tag t, embedding_tag et
+                    WHERE t.id=et.tag_id AND et.embedding_uuid=embedding.uuid
+                ), '[]'::json) tags
+            FROM embedding WHERE text = %s AND model = %s
+        """,
         (text, openai_embedding_model),
     )
     result = cursor.fetchone()
     if result is not None:
-        return_val = _text_embeddings_cache[text] = (result["uuid"], result["vector"])
+        return_val = _text_embeddings_cache[(text, openai_embedding_model)] = (
+            Embedding.parse_obj(result)
+        )
         return return_val
     return None
 
@@ -84,8 +94,9 @@ def get_text_embedding(
     cursor: Cursor,
     text: str,
     openai_embedding_model: str,
-    tags: List[str],
-) -> Tuple[UUID, Vector]:
+    tags: Optional[List[str]] = None,
+) -> Embedding:
+    assert not tags, "tags not yet impl"
     if result := get_existing_text_embedding(cursor, text, openai_embedding_model):
         metrics_count("embedding.cache.hit")
         return result
@@ -96,46 +107,41 @@ def get_text_embedding(
             value=1,
             tags={"provider": "openai", "model": openai_embedding_model},
         )
-        vector = (
-            openai_client.embeddings.create(
-                input=text,
-                model=openai_embedding_model,
+        vector = np.array(
+            (
+                openai_client.embeddings.create(
+                    input=text, model=openai_embedding_model
+                )
+                .data[0]
+                .embedding
             )
-            .data[0]
-            .embedding
         )
         uuid = str_to_uuid(text)
 
         # Install this embedding into the cache.
-        _text_embeddings_cache[text] = (uuid, vector)
-
+        embedding = Embedding(
+            uuid=uuid, text=text, model=openai_embedding_model, vector=vector, tags=[]
+        )
+        _text_embeddings_cache[(text, openai_embedding_model)] = embedding
         # Also emplace the embedding into the db.
-        upsert_embedding(cursor, uuid, text, openai_embedding_model, vector)
+        upsert_embedding(cursor, embedding)
 
-        return uuid, vector
+        return embedding
 
 
-def upsert_embedding(
-    cursor: Cursor,
-    uuid: UUID,
-    text: str,
-    model: str,
-    vector: np.array,
-) -> None:
+def upsert_embedding(cursor: Cursor, embedding: Embedding) -> None:
     cursor.execute(
         """
             INSERT INTO embedding (uuid, text, model, vector)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (text, model) DO NOTHING
         """,
-        (uuid, text, model, vector),
+        (embedding.uuid, embedding.text, embedding.model, embedding.vector),
     )
 
 
 def process_document_sentences(
-    nlp: spacy.language.Language,
-    file_path: str,
-    openai_embedding_model: str,
+    nlp: spacy.language.Language, file_path: str, openai_embedding_model: str
 ) -> None:
     with open(file_path, "r") as file:
         text = file.read()
@@ -149,10 +155,7 @@ def process_document_sentences(
         ensure_sentence_embeddings(cursor, sentences, openai_embedding_model)
 
 
-def process_document_paragraphs(
-    file_path: str,
-    openai_embedding_model: str,
-) -> None:
+def process_document_paragraphs(file_path: str, openai_embedding_model: str) -> None:
     with open(file_path, "r") as file:
         text = file.read()
     document = Document(filename=file_path, sha256=str_sha256(text))
@@ -178,16 +181,14 @@ def paragraph_exists_in_db(cursor: Cursor, paragraph_uuid: UUID) -> bool:
 
 
 def ensure_semantic_triples_for_paragraph(
-    cursor: Cursor,
-    paragraph: Paragraph,
-    openai_embedding_model: str,
+    cursor: Cursor, paragraph: Paragraph, openai_embedding_model: str
 ) -> None:
     if paragraph_exists_in_db(cursor, paragraph.uuid):
         # Paragraph has already been processed, skip.
         return
 
     def _get_uuid(x: str) -> UUID:
-        return get_text_embedding(cursor, x, openai_embedding_model)[0]
+        return get_text_embedding(cursor, x, openai_embedding_model).uuid
 
     # TODO: multi-pass/transact this to avoid dupes in the event of failure midway.
     triples: List[SemanticTriple] = get_triples(paragraph.text)
@@ -216,10 +217,7 @@ def ensure_semantic_triples_for_paragraph(
     # Mark this paragraph as done.
     cursor.execute(
         "INSERT INTO paragraph (uuid, text) VALUES (%s, %s)",
-        (
-            paragraph.uuid,
-            paragraph.text,
-        ),
+        (paragraph.uuid, paragraph.text),
     )
 
 
@@ -250,9 +248,7 @@ def migrate() -> None:
 
 
 def ensure_sentence_embeddings(
-    cursor: Cursor,
-    sentences: List[spacy.tokens.span.Span],
-    model: str,
+    cursor: Cursor, sentences: List[spacy.tokens.span.Span], model: str
 ):
     chunk_size = 200
     chunk = []
@@ -279,28 +275,28 @@ def num_tokens_from_string(string: str, encoding_name: str) -> int:
     return num_tokens
 
 
-def bulk_upsert_embeddings(
-    cursor: Cursor,
-    sentences: List[str],
-    model: str,
-):
+def bulk_upsert_embeddings(cursor: Cursor, sentences: List[str], model: str) -> None:
     if len(sentences) == 0:
         return
     metrics_count(
-        "embeddings.create",
-        len(sentences),
-        tags={"provider": "openai", "model": model},
+        "embeddings.create", len(sentences), tags={"provider": "openai", "model": model}
     )
+    sentences = [
+        sentence
+        for sentence in sentences
+        if not get_existing_text_embedding(cursor, sentence, model)
+    ]
+
     vectors = [
-        x.embedding
-        for x in openai_client.embeddings.create(
-            input=sentences,
-            model=model,
-        ).data
+        np.array(x.embedding)
+        for x in openai_client.embeddings.create(input=sentences, model=model).data
     ]
     for sentence, vector in zip(sentences, vectors):
         uuid = str_to_uuid(sentence)
-        upsert_embedding(cursor, uuid, sentence, model, vector)
+        embedding = Embedding(
+            uuid=uuid, text=sentence, model=model, vector=vector, tags=[]
+        )
+        upsert_embedding(cursor, embedding)
 
 
 @main.command()
@@ -325,16 +321,10 @@ def query(openai_embedding_model: str) -> None:
         query_str = input("Enter your query: ")
         with db_cursor() as cursor:
             query_embedding: Vector = get_text_embedding(
-                cursor,
-                query_str,
-                openai_embedding_model,
-            )[1]
+                cursor, query_str, openai_embedding_model
+            ).vector
             embeddings_with_distance: List[EmbeddingWithDistance] = (
-                get_k_nearest_embeddings(
-                    cursor,
-                    query_embedding,
-                    top_n=10,
-                )
+                get_k_nearest_embeddings(cursor, query_embedding, top_n=10)
             )
             gather_related_triples(cursor, embeddings_with_distance)
 
