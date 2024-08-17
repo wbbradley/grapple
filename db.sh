@@ -1,6 +1,8 @@
 #!/bin/bash
 # Basic local dev controls for project dbs.
 containers=( grapple-graphdb grapple-rdb )
+# PG_IMAGE=postgres:16.4
+PG_IMAGE='pgvector/pgvector:pg16'
 
 db-init-dbs() {
   if [[ "$1" = '-f' ]]; then
@@ -10,20 +12,11 @@ db-init-dbs() {
   fi
 
   docker run \
-    --name grapple-graphdb \
-    --restart always \
-    --publish=7474:7474 \
-    --publish=7687:7687 \
-    --env NEO4J_AUTH=none \
-    -d \
-    neo4j:5.22.0
-
-  docker run \
     --name grapple-rdb \
     --publish=5432:5432 \
     -e POSTGRES_PASSWORD=postgres \
     -d \
-    postgres:16.4
+    "$PG_IMAGE"
 }
 
 db-rdb-shell() {
@@ -34,9 +27,10 @@ db-rdb-shell() {
     -v "$PWD"/schema.sql:/var/schema.sql \
     -e PGPASSWORD=postgres \
     -e POSTGRES_PASSWORD=irrelevant \
-    postgres:16.4 \
+    "$PG_IMAGE" \
     bash
 }
+
 
 db-psql() {
   docker run \
@@ -44,7 +38,7 @@ db-psql() {
     --rm \
     --link grapple-rdb:postgres \
     -e PGPASSWORD=postgres \
-    postgres:16.4 \
+    "$PG_IMAGE" \
     psql -h postgres -U postgres "$@"
 }
 

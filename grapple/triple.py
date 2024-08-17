@@ -52,4 +52,5 @@ def get_triples(paragraph: str) -> List[SemanticTriple]:
 def gather_related_triples(
     cursor: Cursor, embeddings_with_distance: List[EmbeddingWithDistance]
 ) -> List[SemanticTriple]:
+    cursor.execute
     raise NotImplementedError()

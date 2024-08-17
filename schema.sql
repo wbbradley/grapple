@@ -1,10 +1,12 @@
+CREATE EXTENSION IF NOT EXISTS vector;
+
 BEGIN;
 
 CREATE TABLE embedding (
   uuid UUID PRIMARY KEY,
   text TEXT NOT NULL,
   model TEXT NOT NULL,
-  vector JSONB NOT NULL,
+  vector VECTOR(3072) NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
 CREATE UNIQUE INDEX ix_embedding ON embedding (text, model);

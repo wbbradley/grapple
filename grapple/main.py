@@ -7,11 +7,12 @@ from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Tuple, Union
 from uuid import UUID
 
 import click
+import numpy as np
 import psycopg
 import spacy
 import tiktoken
+from pgvector.psycopg import register_vector  # type: ignore
 from psycopg.rows import dict_row
-from psycopg.types.json import Json
 from tqdm import tqdm
 
 from grapple.document import Document
@@ -26,7 +27,6 @@ from grapple.utils import str_sha256, str_to_uuid
 
 DEFAULT_SPACY_MODEL = "en_core_web_lg"
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
-
 
 logging.basicConfig(
     filename=os.path.expanduser("~/grapple.log"),
@@ -114,14 +114,20 @@ def get_text_embedding(
         return uuid, vector
 
 
-def upsert_embedding(cursor, uuid: UUID, text: str, model: str, vector: Vector) -> None:
+def upsert_embedding(
+    cursor: Cursor,
+    uuid: UUID,
+    text: str,
+    model: str,
+    vector: np.array,
+) -> None:
     cursor.execute(
         """
             INSERT INTO embedding (uuid, text, model, vector)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (text, model) DO NOTHING
         """,
-        (uuid, text, model, Json(vector)),
+        (uuid, text, model, vector),
     )
 
 
@@ -330,6 +336,7 @@ def query(openai_embedding_model: str) -> None:
                 )
             )
             gather_related_triples(cursor, embeddings_with_distance)
+
         for ewd in embeddings_with_distance:
             logging.info(f"{ewd.distance}: {ewd.embedding.text}")
 
@@ -343,6 +350,7 @@ def db_cursor(row_factory: Any = dict_row) -> Iterator[Cursor]:
         host="127.0.0.1",
         port="5432",
     ) as conn:
+        register_vector(conn)
         with conn.cursor(row_factory=row_factory) as cursor:
             yield cursor
 
