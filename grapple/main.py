@@ -10,13 +10,12 @@ import click
 import numpy as np
 import psycopg
 import spacy
-import tiktoken
 from pgvector.psycopg import register_vector  # type: ignore
 from psycopg.rows import dict_row
 from tqdm import tqdm
 
 from grapple.colors import colorize
-from grapple.document import Document
+from grapple.document import Document, upsert_document
 from grapple.embedding import Embedding
 from grapple.metrics import metrics_count, metrics_timer
 from grapple.openai import openai_client
@@ -24,7 +23,7 @@ from grapple.paragraph import Paragraph, get_paragraph, get_paragraphs
 from grapple.timer import Timer
 from grapple.triple import Triple, gather_related_triples, get_triples
 from grapple.types import Cursor, Vector
-from grapple.utils import str_to_uuid
+from grapple.utils import num_tokens_from_string, str_to_uuid
 
 DEFAULT_SPACY_MODEL = "en_core_web_lg"
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
@@ -154,6 +153,9 @@ def process_document_paragraphs(file_path: str, openai_embedding_model: str) -> 
     with open(file_path, "r") as file:
         text = file.read()
     document = Document(filename=file_path, uuid=str_to_uuid(text))
+
+    with db_cursor() as cursor:
+        upsert_document(cursor, document)
     paragraphs = get_paragraphs(document, text)
     with db_cursor() as cursor:
         for paragraph in tqdm(paragraphs):
@@ -266,7 +268,7 @@ def ensure_sentence_embeddings(cursor: Cursor, sentences: List[spacy.tokens.span
     chunk = []
     for sentence in tqdm(sentences):
         sentence_text = re.sub(r"\s+", " ", sentence.text).strip()
-        if num_tokens_from_string(sentence_text, "cl100k_base") > 8000:
+        if num_tokens_from_string(sentence_text) > 8000:
             # Skip super-long sentences.
             # logging.info(f"skipping sentence {sentence_text} because it has too many tokens")
             continue
@@ -278,13 +280,6 @@ def ensure_sentence_embeddings(cursor: Cursor, sentences: List[spacy.tokens.span
             bulk_upsert_embeddings(cursor, chunk, model)
             chunk = []
     bulk_upsert_embeddings(cursor, chunk, model)
-
-
-def num_tokens_from_string(string: str, encoding_name: str) -> int:
-    """Returns the number of tokens in a text string."""
-    encoding = tiktoken.get_encoding(encoding_name)
-    num_tokens = len(encoding.encode(string))
-    return num_tokens
 
 
 def bulk_upsert_embeddings(cursor: Cursor, sentences: List[str], model: str) -> None:
@@ -342,6 +337,9 @@ def query(openai_embedding_model: str) -> None:
             ).vector
             gathered_triples = gather_related_triples(cursor, query_embedding)
             paragraphs: List[Paragraph] = []
+            print(
+                f"--------------------------- {colorize("Related Triples")} ---------------------------"
+            )
             for gathered_triple in gathered_triples:
                 print(
                     " ".join(
@@ -359,8 +357,14 @@ def query(openai_embedding_model: str) -> None:
             print(
                 f"--------------------------- {colorize("Retrieved")} ---------------------------"
             )
-            for paragraph in paragraphs:
-                print(paragraph)
+            last_document_uuid = None
+            for paragraph in sorted(
+                paragraphs, key=lambda p: (p.document_uuid, p.span_index_start)
+            ):
+                if last_document_uuid != paragraph.document_uuid:
+                    print(colorize(f"# document {paragraph.document_uuid}"))
+                    last_document_uuid = paragraph.document_uuid
+                print(paragraph.text)
 
 
 @contextmanager

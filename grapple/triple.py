@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from typing import List
 from uuid import UUID
@@ -12,6 +13,17 @@ from grapple.paragraph import Paragraph
 from grapple.types import Cursor, Vector
 
 RETRY_TIMEOUT_SECONDS = 30.0
+
+TRIPLES_DESIRED_PER_PARAGRAPH = 15
+TRIPLES_PROMPT = re.sub(
+    r"\s+",
+    " ",
+    f"""
+        Examine the text below. Extract up to {TRIPLES_DESIRED_PER_PARAGRAPH} semantic triples for
+        all information contained in the text. Do not infer triples for subjects that are not
+        mentioned within the given text.
+    """,
+).strip()
 
 
 class Triple(BaseModel):
@@ -33,9 +45,9 @@ class OpenAIQueryTriples(BaseModel):
     triples: List[OpenAIQueryTriple]
 
 
-def get_triples(paragraph: Paragraph) -> List[Triple]:
+def get_triples_from_text(text: str, paragraph_uuid: UUID) -> List[Triple]:
     model = "gpt-4o-2024-08-06"
-    with metrics_timer("openai.request.get-triples"):
+    with metrics_timer("openai.request.get-triples-from-text"):
         while True:
             try:
                 metrics_count(
@@ -46,14 +58,11 @@ def get_triples(paragraph: Paragraph) -> List[Triple]:
                     messages=[
                         {
                             "role": "user",
-                            "content": (
-                                "Please examine the following text and extract up to 15 semantic triples for "
-                                "all information contained therein including a summary"
-                            ),
+                            "content": TRIPLES_PROMPT,
                         },
                         {
                             "role": "user",
-                            "content": paragraph.text,
+                            "content": text,
                         },
                     ],
                     response_format=OpenAIQueryTriples,
@@ -72,7 +81,7 @@ def get_triples(paragraph: Paragraph) -> List[Triple]:
         metrics_count("triples.parsed", value=len(parsed.triples))
         return [
             Triple(
-                paragraph_uuid=paragraph.uuid,
+                paragraph_uuid=paragraph_uuid,
                 subject=x.subject,
                 predicate=x.predicate,
                 object=x.object,
@@ -83,12 +92,36 @@ def get_triples(paragraph: Paragraph) -> List[Triple]:
     return []
 
 
+def get_triples(paragraph: Paragraph) -> List[Triple]:
+    return get_triples_from_text(paragraph.text, paragraph.uuid)
+
+
 class GatheredTriple(Triple):
     id: int
     distance: float
     paragraph_uuid: UUID
 
 
+#
+# Notes on pgvector operators.
+#
+# `<->` (L2 distance):
+# Measures the straight-line distance between points in Euclidean space. Unnormalized vectors
+# directly affect the magnitude of this distance.
+#
+# `<#>` (negative inner product):
+# Unnormalized vectors affect the magnitude of the product, but generally results in a larger
+# negative value with larger vectors.
+#
+# `<=>` (cosine distance):
+# Calculates the angle between vectors and is typically less sensitive to the magnitude, but
+# primarily affected by the direction. For unnormalized vectors, you may need to normalize them to
+# get accurate angular measurements.
+#
+# `<+>` (L1 distance):
+# Measures the sum of the absolute differences of their coordinates. Larger vector values result in
+# a proportionally larger L1 distance.
+#
 def gather_related_triples(
     cursor: Cursor,
     query_embedding: Vector,
@@ -101,7 +134,7 @@ def gather_related_triples(
                     WITH nearest_embeddings AS (
                       SELECT
                           uuid,
-                          (vector <+> %s) AS distance
+                          (vector <-> %s) AS distance
                       FROM embedding
                     ), enriched_triples AS (
                       SELECT
