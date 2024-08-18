@@ -5,7 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 from scipy.spatial.distance import cosine  # type: ignore
 
-from grapple.timer import Timer
+from grapple.metrics import metrics_timer
 from grapple.types import Cursor, Vector
 
 
@@ -41,7 +41,7 @@ def fetch_all_embeddings(cursor: Cursor) -> List[Embedding]:
     if _embeddings:
         return _embeddings
 
-    with Timer("gather all embeddings"):
+    with metrics_timer("db.gather-all-embeddings"):
         cursor.execute(
             """
                 SELECT uuid, text, model, vector
@@ -58,7 +58,7 @@ def get_k_nearest_embeddings(
     cursor: Cursor, query: Vector, top_n: int
 ) -> List[EmbeddingWithDistance]:
     embeddings = fetch_all_embeddings(cursor)
-    with Timer("calculating cosine distances"):
+    with metrics_timer("compute.cosine-distances"):
         embeddings_with_distance = [
             EmbeddingWithDistance(embedding=x, distance=cosine(x.vector, query))
             for x in embeddings

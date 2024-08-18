@@ -1,74 +1,102 @@
-from pprint import pprint
+import logging
+import time
 from typing import List
+from uuid import UUID
 
+import openai
 from pydantic import BaseModel
 
-from grapple.metrics import metrics_count
+from grapple.metrics import metrics_count, metrics_timer
 from grapple.openai import openai_client
 from grapple.types import Cursor, Vector
 
+RETRY_TIMEOUT_SECONDS = 30.0
 
-class SemanticTriple(BaseModel):
+
+class Triple(BaseModel):
     subject: str
     predicate: str
     object: str
     summary: str
 
 
-class SemanticTriples(BaseModel):
-    triples: List[SemanticTriple]
+class Triples(BaseModel):
+    triples: List[Triple]
 
 
-def get_triples(paragraph: str) -> List[SemanticTriple]:
+def get_triples(paragraph: str) -> List[Triple]:
     model = "gpt-4o-2024-08-06"
     metrics_count(
         "beta.chat.completions.parse",
         tags={"provider": "openai", "model": model},
     )
-    completion = openai_client.beta.chat.completions.parse(
-        model=model,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "Please examine the following text and extract semantic triples for "
-                    "all information contained therein, also include a summary "
-                    "describing the found fact."
-                ),
-            },
-            {
-                "role": "user",
-                "content": paragraph,
-            },
-        ],
-        response_format=SemanticTriples,
-    )
+    with metrics_timer("openai.request.get-triples"):
+        while True:
+            try:
+                completion = openai_client.beta.chat.completions.parse(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": (
+                                "Please examine the following text and extract up to 15 semantic triples for "
+                                "all information contained therein including a summary"
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": paragraph,
+                        },
+                    ],
+                    response_format=Triples,
+                )
+                break
+            except openai.RateLimitError as e:
+                logging.error(f"query_gpt_model: RateLimitError {e.message}: {e}")
+                time.sleep(RETRY_TIMEOUT_SECONDS)
+            except openai.APIError as e:
+                logging.error(f"query_gpt_model: APIError {e.message}: {e}")
+                logging.error("query_gpt_model: Retrying after 5 seconds...")
+                time.sleep(5)
     if parsed := completion.choices[0].message.parsed:
         metrics_count("triples.parsed")
         return parsed.triples
     return []
 
 
+class GatheredTriple(Triple):
+    id: int
+    distance: float
+    paragraph_uuid: UUID
+
+
 def gather_related_triples(
     cursor: Cursor,
     query_embedding: Vector,
-) -> List[SemanticTriple]:
-    associated_triples = cursor.execute(
-        """
+) -> List[GatheredTriple]:
+    return list(
+        map(
+            SituatedTriple.parse_obj,
+            cursor.execute(
+                """
         WITH nearest_embeddings AS (
-          SELECT uuid, (vector <-> %s) AS distance
+          SELECT
+              uuid,
+              (vector <+> %s) AS distance
           FROM embedding
-          ORDER BY distance
-          LIMIT %s
         ), enriched_triples AS (
           SELECT
             t.id,
             t.created_at,
             p.text AS paragraph_text,
+            p.uuid AS paragraph_uuid,
             es.text AS subject_text,
             ep.text AS predicate_text,
             eo.text AS object_text,
             esu.text AS summary_text,
+            t.subject_uuid AS subject_uuid,
+            t.predicate_uuid AS predicate_uuid,
+            t.object_uuid AS object_uuid,
             t.summary_uuid AS summary_uuid
           FROM triple t
           LEFT JOIN paragraph p ON t.paragraph_uuid = p.uuid
@@ -78,16 +106,20 @@ def gather_related_triples(
           LEFT JOIN embedding esu ON t.summary_uuid = esu.uuid
         )
         SELECT
+           DISTINCT et.id as triple_id,
+           et.paragraph_uuid,
            subject_text subject,
            predicate_text predicate,
            object_text object,
            summary_text summary,
            ne.distance distance
         FROM enriched_triples et
-        JOIN nearest_embeddings ne ON et.summary_uuid = ne.uuid
-        ORDER BY et.created_at
+        JOIN nearest_embeddings ne ON ne.uuid in (et.summary_uuid, et.subject_uuid,
+                                                  et.predicate_uuid, et.object_uuid)
+        ORDER BY distance
+        LIMIT %s
     """,
-        (query_embedding, 3),
-    ).fetchall()
-    pprint(associated_triples)
-    return []
+                (query_embedding, 10),
+            ),
+        )
+    )

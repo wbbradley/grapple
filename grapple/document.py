@@ -1,6 +1,8 @@
+from uuid import UUID
+
 from pydantic import BaseModel
 
 
 class Document(BaseModel):
-    sha256: str
+    uuid: UUID
     filename: str

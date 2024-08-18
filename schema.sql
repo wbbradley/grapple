@@ -1,5 +1,7 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
+-- NB: all UUIDs are content-addressable keys based on a SHA256 of the related text. See str_to_uuid.
+
 BEGIN;
 
 CREATE TABLE embedding (
@@ -32,12 +34,15 @@ CREATE TABLE document (
 
 -- Existence of rows in this relation indicate that this paragraph's triples
 -- have been ingested.
--- uuid is based on a SHA256 of the paragraph text.
 CREATE TABLE paragraph (
-  uuid UUID PRIMARY KEY,
-  text TEXT,
+  id BIGSERIAL PRIMARY KEY,
+  text TEXT NOT NULL,
+  document_uuid UUID NOT NULL,
+  span_index_start BIGINT NOT NULL,
+  span_index_lim BIGINT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
+CREATE UNIQUE INDEX ix_paragraph ON paragraph (document_uuid, span_index_start, span_index_lim);
 
 CREATE TABLE triple (
   id SERIAL PRIMARY KEY,
@@ -56,30 +61,4 @@ CREATE TABLE triple (
 --   index_span_end BIGINT
 -- );
 
-COMMIT;
-
-        WITH nearest_embeddings AS (
-          SELECT uuid
-          FROM embedding
-          ORDER BY vector <-> "hey"
-          LIMIT 29
-        ), enriched_triples AS (
-          SELECT
-            t.id,
-            t.created_at,
-            p.text AS paragraph_text,
-            es.text AS subject_text,
-            ep.text AS predicate_text,
-            eo.text AS object_text,
-            esu.text AS summary_text
-          FROM triple t
-          LEFT JOIN paragraph p ON t.paragraph_uuid = p.uuid
-          LEFT JOIN embedding es ON t.subject_uuid = es.uuid
-          LEFT JOIN embedding ep ON t.predicate_uuid = ep.uuid
-          LEFT JOIN embedding eo ON t.object_uuid = eo.uuid
-          LEFT JOIN embedding esu ON t.summary_uuid = esu.uuid
-        )
-        SELECT *
-        FROM enriched_triples et
-        JOIN nearest_embeddings ne ON et.summary_uuid = ne.uuid
-        ORDER BY et.created_at
+COMMIT

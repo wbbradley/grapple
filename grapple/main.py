@@ -15,13 +15,14 @@ from pgvector.psycopg import register_vector  # type: ignore
 from psycopg.rows import dict_row
 from tqdm import tqdm
 
+from grapple.colors import colorize
 from grapple.document import Document
 from grapple.embedding import Embedding
-from grapple.metrics import metrics_count
+from grapple.metrics import metrics_count, metrics_timer
 from grapple.openai import openai_client
 from grapple.paragraph import Paragraph, get_paragraphs
 from grapple.timer import Timer
-from grapple.triple import SemanticTriple, gather_related_triples, get_triples
+from grapple.triple import Triple, gather_related_triples, get_triples
 from grapple.types import Cursor, Vector
 from grapple.utils import str_sha256, str_to_uuid
 
@@ -105,15 +106,16 @@ def get_text_embedding(
             value=1,
             tags={"provider": "openai", "model": openai_embedding_model},
         )
-        vector = np.array(
-            (
-                openai_client.embeddings.create(
-                    input=text, model=openai_embedding_model
+        with metrics_timer("openai.request.embeddings"):
+            vector = np.array(
+                (
+                    openai_client.embeddings.create(
+                        input=text, model=openai_embedding_model
+                    )
+                    .data[0]
+                    .embedding
                 )
-                .data[0]
-                .embedding
             )
-        )
         uuid = str_to_uuid(text)
 
         # Install this embedding into the cache.
@@ -147,7 +149,7 @@ def process_document_sentences(
     with open(file_path, "r") as file:
         text = file.read()
 
-    with Timer("run nlp on doc"):
+    with metrics_timer("compute.run-nlp-on-doc"):
         nlp.max_length = 4000000
         doc: spacy.tokens.doc.Doc = nlp(text)
         sentences = list(doc.sents)
@@ -192,7 +194,7 @@ def ensure_semantic_triples_for_paragraph(
         return get_text_embedding(cursor, x, openai_embedding_model).uuid
 
     # TODO: multi-pass/transact this to avoid dupes in the event of failure midway.
-    triples: List[SemanticTriple] = get_triples(paragraph.text)
+    triples: List[Triple] = get_triples(paragraph.text)
     sql_triples: List[Tuple[UUID, UUID, UUID, UUID, UUID]] = []
     for triple in triples:
         logging.info(triple.summary)
@@ -205,21 +207,22 @@ def ensure_semantic_triples_for_paragraph(
                 _get_uuid(triple.summary),
             )
         )
-    cursor.executemany(
-        """
-        INSERT INTO triple
-            (paragraph_uuid, subject_uuid, predicate_uuid, object_uuid, summary_uuid)
-        VALUES
-            (%s, %s, %s, %s, %s)
-        """,
-        sql_triples,
-    )
+    with metrics_timer("db.insert-triples"):
+        cursor.executemany(
+            """
+            INSERT INTO triple
+                (paragraph_uuid, subject_uuid, predicate_uuid, object_uuid, summary_uuid)
+            VALUES
+                (%s, %s, %s, %s, %s)
+            """,
+            sql_triples,
+        )
 
-    # Mark this paragraph as done.
-    cursor.execute(
-        "INSERT INTO paragraph (uuid, text) VALUES (%s, %s)",
-        (paragraph.uuid, paragraph.text),
-    )
+        # Mark this paragraph as done.
+        cursor.execute(
+            "INSERT INTO paragraph (uuid, text) VALUES (%s, %s)",
+            (paragraph.uuid, paragraph.text),
+        )
 
 
 @main.command()
@@ -288,10 +291,11 @@ def bulk_upsert_embeddings(cursor: Cursor, sentences: List[str], model: str) -> 
         if not get_existing_text_embedding(cursor, sentence, model)
     ]
 
-    vectors = [
-        np.array(x.embedding)
-        for x in openai_client.embeddings.create(input=sentences, model=model).data
-    ]
+    with metrics_timer("openai.request.embeddings"):
+        vectors = [
+            np.array(x.embedding)
+            for x in openai_client.embeddings.create(input=sentences, model=model).data
+        ]
     for sentence, vector in zip(sentences, vectors):
         uuid = str_to_uuid(sentence)
         embedding = Embedding(
@@ -322,12 +326,28 @@ def ingest(filename: str, openai_embedding_model: str) -> None:
 @click.option("--openai-embedding-model", default=DEFAULT_OPENAI_EMBEDDING_MODEL)
 def query(openai_embedding_model: str) -> None:
     while True:
-        query_str = input("Enter your query: ")
+        query_str = input(colorize("Enter your query: "))
         with db_cursor() as cursor:
             query_embedding: Vector = get_text_embedding(
                 cursor, query_str, openai_embedding_model
             ).vector
-            gather_related_triples(cursor, query_embedding)
+            gathered_triples = gather_related_triples(cursor, query_embedding)
+            paragraphs: List[Paragraph] = []
+            for gathered_triple in gathered_triples:
+                print(
+                    " ".join(
+                        [
+                            f"{gathered_triple.id}: ",
+                            colorize(gathered_triple.subject),
+                            colorize(gathered_triple.predicate),
+                            colorize(gathered_triple.object),
+                            gathered_triple.summary,
+                        ]
+                    )
+                )
+                if paragraph := get_paragraph(gathered_triple.paragraph_uuid):
+                    paragraphs.append(paragraph)
+            return []
 
 
 @contextmanager

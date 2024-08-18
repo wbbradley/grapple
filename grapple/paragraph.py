@@ -1,18 +1,37 @@
 import re
-from typing import List, Tuple
+from typing import List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel
 
 from grapple.document import Document
-from grapple.utils import str_to_uuid
+from grapple.types import Cursor
 
 
 class Paragraph(BaseModel):
+    id: Optional[int]
     text: str
-    uuid: UUID
-    document: Document
-    index_span: Tuple[int, int]
+    document_uuid: Optional[UUID]
+    span_index_start: Optional[int]
+    span_index_lim: Optional[int]
+
+
+def get_paragraph(cursor: Cursor, paragraph_uuid: UUID) -> Paragraph:
+    return Paragraph.parse_obj(
+        cursor.execute(
+            """
+                SELECT
+                    uuid,
+                    text,
+                    document_uuid,
+                    span_index_start,
+                    span_index_lim
+                FROM paragraph
+                WHERE uuid=%s
+            """,
+            (paragraph_uuid,),
+        ).fetchone()
+    )
 
 
 def get_paragraphs(document: Document, text: str) -> List[Paragraph]:
@@ -29,10 +48,11 @@ def get_paragraphs(document: Document, text: str) -> List[Paragraph]:
             return
 
         paragraph = Paragraph(
+            id=None,
             text=paragraph_text,
-            uuid=str_to_uuid(paragraph_text),
-            document=document,
-            index_span=(start, end),
+            document_uuid=document.uuid,
+            span_index_start=start,
+            span_index_lim=end,
         )
 
         paragraphs.append(paragraph)

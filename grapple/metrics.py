@@ -1,4 +1,6 @@
+import logging
 import socket
+import time
 from typing import Dict, Optional
 
 
@@ -13,7 +15,7 @@ class StatsdClient:
         metric: str,
         value: float,
         metric_type: str,
-        tags: Optional[Dict[str, str]],
+        tags: Optional[Dict[str, str]] = None,
     ) -> None:
         if tags:
             tag_str = ",".join(f"{k}:{v}" for k, v in tags.items())
@@ -33,4 +35,18 @@ def metrics_count(
     metric: str, value: float = 1, tags: Optional[Dict[str, str]] = None
 ) -> None:
     # Track custom metrics
-    client.send_metric(metric, value, "count", None)  #  tags)
+    client.send_metric(metric, value, "c", None)  #  tags)
+
+
+class metrics_timer:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __enter__(self) -> None:
+        self.start_time = time.time()
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        end_time = time.time()
+        elapsed_time = end_time - self.start_time
+        client.send_metric(self.name, int(elapsed_time * 1000), "ms")
+        logging.info(f"{self.name} took {elapsed_time:.2f} seconds.")
