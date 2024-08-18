@@ -6,8 +6,14 @@ die() {
 
 cd "$(dirname "$0")" ||:
 
+# shellcheck disable=SC1091
 . .venv/bin/activate
 
-ruff format --diff || die "ruff failed"
-ruff check || die "ruff failed"
+if [[ -n "$CI" ]]; then
+  ruff format --check || die "ruff format check failed"
+  ruff check --fix || die "ruff check --fix failed"
+else
+  ruff format || die "ruff format failed"
+  ruff check || die "ruff check failed"
+fi
 mypy . || die "mypy failed"

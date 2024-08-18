@@ -8,31 +8,39 @@ from pydantic import BaseModel
 
 from grapple.metrics import metrics_count, metrics_timer
 from grapple.openai import openai_client
+from grapple.paragraph import Paragraph
 from grapple.types import Cursor, Vector
 
 RETRY_TIMEOUT_SECONDS = 30.0
 
 
 class Triple(BaseModel):
+    paragraph_uuid: UUID
     subject: str
     predicate: str
     object: str
     summary: str
 
 
-class Triples(BaseModel):
-    triples: List[Triple]
+class OpenAIQueryTriple(BaseModel):
+    subject: str
+    predicate: str
+    object: str
+    summary: str
 
 
-def get_triples(paragraph: str) -> List[Triple]:
+class OpenAIQueryTriples(BaseModel):
+    triples: List[OpenAIQueryTriple]
+
+
+def get_triples(paragraph: Paragraph) -> List[Triple]:
     model = "gpt-4o-2024-08-06"
-    metrics_count(
-        "beta.chat.completions.parse",
-        tags={"provider": "openai", "model": model},
-    )
     with metrics_timer("openai.request.get-triples"):
         while True:
             try:
+                metrics_count(
+                    f"beta.chat.completions.parse.{model}",
+                )
                 completion = openai_client.beta.chat.completions.parse(
                     model=model,
                     messages=[
@@ -45,22 +53,33 @@ def get_triples(paragraph: str) -> List[Triple]:
                         },
                         {
                             "role": "user",
-                            "content": paragraph,
+                            "content": paragraph.text,
                         },
                     ],
-                    response_format=Triples,
+                    response_format=OpenAIQueryTriples,
                 )
                 break
             except openai.RateLimitError as e:
+                metrics_count("openai.errors.rate-limited")
                 logging.error(f"query_gpt_model: RateLimitError {e.message}: {e}")
                 time.sleep(RETRY_TIMEOUT_SECONDS)
             except openai.APIError as e:
+                metrics_count("openai.errors.api-error")
                 logging.error(f"query_gpt_model: APIError {e.message}: {e}")
                 logging.error("query_gpt_model: Retrying after 5 seconds...")
                 time.sleep(5)
     if parsed := completion.choices[0].message.parsed:
-        metrics_count("triples.parsed")
-        return parsed.triples
+        metrics_count("triples.parsed", value=len(parsed.triples))
+        return [
+            Triple(
+                paragraph_uuid=paragraph.uuid,
+                subject=x.subject,
+                predicate=x.predicate,
+                object=x.object,
+                summary=x.summary,
+            )
+            for x in parsed.triples
+        ]
     return []
 
 
@@ -76,7 +95,7 @@ def gather_related_triples(
 ) -> List[GatheredTriple]:
     return list(
         map(
-            SituatedTriple.parse_obj,
+            GatheredTriple.parse_obj,
             cursor.execute(
                 """
         WITH nearest_embeddings AS (

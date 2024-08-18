@@ -1,19 +1,24 @@
 import re
-from typing import List, Optional
+from typing import List
 from uuid import UUID
 
 from pydantic import BaseModel
 
 from grapple.document import Document
 from grapple.types import Cursor
+from grapple.utils import str_to_uuid
 
 
 class Paragraph(BaseModel):
-    id: Optional[int]
+    uuid: UUID
     text: str
-    document_uuid: Optional[UUID]
-    span_index_start: Optional[int]
-    span_index_lim: Optional[int]
+    document_uuid: UUID
+    span_index_start: int
+    span_index_lim: int
+
+    @staticmethod
+    def make_uuid(document_uuid: UUID, start: int, lim: int) -> UUID:
+        return str_to_uuid(f"{document_uuid}:{start}:{lim}")
 
 
 def get_paragraph(cursor: Cursor, paragraph_uuid: UUID) -> Paragraph:
@@ -48,7 +53,7 @@ def get_paragraphs(document: Document, text: str) -> List[Paragraph]:
             return
 
         paragraph = Paragraph(
-            id=None,
+            uuid=Paragraph.make_uuid(document.uuid, start, end),
             text=paragraph_text,
             document_uuid=document.uuid,
             span_index_start=start,

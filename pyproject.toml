@@ -15,7 +15,11 @@ dependencies = [
 [project.scripts]
 grapple = "grapple.main:main"
 
+[tool.ruff]
+line-length = 100
+
 [tool.autoimport.common_statements]
+Paragraph = "from grapple.paragraph import Paragraph"
 BaseModel = "from pydantic import BaseModel"
 Cursor = "from grapple.types import Cursor"
 Embedding = "from grapple.embedding import Embedding"

@@ -1,9 +1,28 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- NB: all UUIDs are content-addressable keys based on a SHA256 of the related text. See str_to_uuid.
+-- NB: all UUIDs are content-addressable keys based on a SHA256 of the related
+-- text AND/OR a superkey of related fields. See str_to_uuid, etc..
 
 BEGIN;
 
+CREATE TABLE document (
+  uuid UUID PRIMARY KEY,
+  created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+  filename TEXT NOT NULL
+);
+
+-- Existence of rows in this relation indicate that this paragraph's triples
+-- have been ingested.
+CREATE TABLE paragraph (
+  uuid UUID PRIMARY KEY, -- hash(document_uuid, span_index..)
+  text TEXT NOT NULL,
+  document_uuid UUID NOT NULL,
+  span_index_start BIGINT NOT NULL,
+  span_index_lim BIGINT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE UNIQUE INDEX ix_paragraph ON paragraph (document_uuid, span_index_start, span_index_lim);
 CREATE TABLE embedding (
   uuid UUID PRIMARY KEY,
   text TEXT NOT NULL,
@@ -26,23 +45,6 @@ CREATE TABLE embedding_tag (
 );
 CREATE UNIQUE INDEX ix_embedding_tag ON embedding_tag (embedding_uuid, tag_id);
 
-CREATE TABLE document (
-  uuid UUID PRIMARY KEY,
-  created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-  filename TEXT NOT NULL
-);
-
--- Existence of rows in this relation indicate that this paragraph's triples
--- have been ingested.
-CREATE TABLE paragraph (
-  id BIGSERIAL PRIMARY KEY,
-  text TEXT NOT NULL,
-  document_uuid UUID NOT NULL,
-  span_index_start BIGINT NOT NULL,
-  span_index_lim BIGINT NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
-);
-CREATE UNIQUE INDEX ix_paragraph ON paragraph (document_uuid, span_index_start, span_index_lim);
 
 CREATE TABLE triple (
   id SERIAL PRIMARY KEY,
@@ -54,11 +56,4 @@ CREATE TABLE triple (
   summary_uuid UUID NOT NULL
 );
 
--- CREATE TABLE paragraph_instance (
---   document_uuid UUID PRIMARY KEY,
---   paragraph_uuid UUID PRIMARY KEY,
---   index_span_start BIGINT,
---   index_span_end BIGINT
--- );
-
-COMMIT
+COMMIT;

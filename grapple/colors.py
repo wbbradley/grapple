@@ -13,7 +13,11 @@ def colored_output(r: int, g: int, b: int) -> Generator[None, None, None]:
         reset_tty()
 
 
-def hash_to_color(input_string: str, saturation: float = 0.8, value: float = 0.8) -> Tuple[int, int, int]:
+def hash_to_color(
+    input_string: str,
+    saturation: float = 0.8,
+    value: float = 0.8,
+) -> Tuple[int, int, int]:
     # Generate a hash of the input string
     hash_object = hashlib.md5(input_string.encode())
     hash_hex: str = hash_object.hexdigest()
@@ -40,7 +44,12 @@ def hash_to_color(input_string: str, saturation: float = 0.8, value: float = 0.8
     return rgb_255
 
 
-def colorize(text: str, r: Optional[int] = None, g: Optional[int] = None, b: Optional[int] = None) -> str:
+def colorize(
+    text: str,
+    r: Optional[int] = None,
+    g: Optional[int] = None,
+    b: Optional[int] = None,
+) -> str:
     if r is None or g is None or b is None:
         r, g, b = hash_to_color(text)
     return f"\001\033[38;2;{r};{g};{b}m\002{text}\001\033[0m\002"
@@ -55,8 +64,4 @@ def reset_tty() -> None:
 
 
 def erase_line() -> None:
-    from ai.output import get_quiet_mode
-
-    if get_quiet_mode():
-        return None
     print("\r\33[2K\r", end="")

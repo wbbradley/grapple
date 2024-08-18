@@ -25,12 +25,8 @@ class EmbeddingWithDistance:
     distance: float
 
 
-def make_embedding_with_distance(
-    query: Vector, embedding: Embedding
-) -> EmbeddingWithDistance:
-    return EmbeddingWithDistance(
-        embedding=embedding, distance=cosine(embedding.vector, query)
-    )
+def make_embedding_with_distance(query: Vector, embedding: Embedding) -> EmbeddingWithDistance:
+    return EmbeddingWithDistance(embedding=embedding, distance=cosine(embedding.vector, query))
 
 
 _embeddings: List[Embedding] = []
@@ -60,8 +56,7 @@ def get_k_nearest_embeddings(
     embeddings = fetch_all_embeddings(cursor)
     with metrics_timer("compute.cosine-distances"):
         embeddings_with_distance = [
-            EmbeddingWithDistance(embedding=x, distance=cosine(x.vector, query))
-            for x in embeddings
+            EmbeddingWithDistance(embedding=x, distance=cosine(x.vector, query)) for x in embeddings
         ]
     embeddings_with_distance.sort(key=lambda x: x.distance)
     return embeddings_with_distance[:top_n]

@@ -1,7 +1,5 @@
-import logging
 import socket
 import time
-from typing import Dict, Optional
 
 
 class StatsdClient:
@@ -15,13 +13,8 @@ class StatsdClient:
         metric: str,
         value: float,
         metric_type: str,
-        tags: Optional[Dict[str, str]] = None,
     ) -> None:
-        if tags:
-            tag_str = ",".join(f"{k}:{v}" for k, v in tags.items())
-            message = f"{metric}:{value}|{metric_type}|# {tag_str}"
-        else:
-            message = f"{metric}:{value}|{metric_type}"
+        message = f"{metric}:{value}|{metric_type}"
         self.sock.sendto(message.encode(), (self.host, self.port))
 
     def close(self) -> None:
@@ -31,11 +24,12 @@ class StatsdClient:
 client = StatsdClient()
 
 
-def metrics_count(
-    metric: str, value: float = 1, tags: Optional[Dict[str, str]] = None
-) -> None:
-    # Track custom metrics
-    client.send_metric(metric, value, "c", None)  #  tags)
+def metrics_count(metric: str, value: float = 1) -> None:
+    client.send_metric(metric, value, "c")
+
+
+def metrics_gauge(metric: str, value: float) -> None:
+    client.send_metric(metric, value, "g")
 
 
 class metrics_timer:
@@ -49,4 +43,3 @@ class metrics_timer:
         end_time = time.time()
         elapsed_time = end_time - self.start_time
         client.send_metric(self.name, int(elapsed_time * 1000), "ms")
-        logging.info(f"{self.name} took {elapsed_time:.2f} seconds.")

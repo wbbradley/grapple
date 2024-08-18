@@ -20,18 +20,16 @@ from grapple.document import Document
 from grapple.embedding import Embedding
 from grapple.metrics import metrics_count, metrics_timer
 from grapple.openai import openai_client
-from grapple.paragraph import Paragraph, get_paragraphs
+from grapple.paragraph import Paragraph, get_paragraph, get_paragraphs
 from grapple.timer import Timer
 from grapple.triple import Triple, gather_related_triples, get_triples
 from grapple.types import Cursor, Vector
-from grapple.utils import str_sha256, str_to_uuid
+from grapple.utils import str_to_uuid
 
 DEFAULT_SPACY_MODEL = "en_core_web_lg"
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 
-logging.basicConfig(
-    filename=os.path.expanduser("~/grapple.log"), level=logging.INFO, filemode="a"
-)
+logging.basicConfig(filename=os.path.expanduser("~/grapple.log"), level=logging.INFO, filemode="a")
 logging.getLogger("httpx").setLevel(logging.WARN)
 
 
@@ -82,8 +80,8 @@ def get_existing_text_embedding(
     )
     result = cursor.fetchone()
     if result is not None:
-        return_val = _text_embeddings_cache[(text, openai_embedding_model)] = (
-            Embedding.parse_obj(result)
+        return_val = _text_embeddings_cache[(text, openai_embedding_model)] = Embedding.parse_obj(
+            result
         )
         return return_val
     return None
@@ -101,17 +99,11 @@ def get_text_embedding(
         return result
     else:
         metrics_count("embedding.cache.miss")
-        metrics_count(
-            "embeddings.create",
-            value=1,
-            tags={"provider": "openai", "model": openai_embedding_model},
-        )
+        metrics_count(f"embedding.create.{openai_embedding_model}", value=1)
         with metrics_timer("openai.request.embeddings"):
             vector = np.array(
                 (
-                    openai_client.embeddings.create(
-                        input=text, model=openai_embedding_model
-                    )
+                    openai_client.embeddings.create(input=text, model=openai_embedding_model)
                     .data[0]
                     .embedding
                 )
@@ -161,30 +153,31 @@ def process_document_sentences(
 def process_document_paragraphs(file_path: str, openai_embedding_model: str) -> None:
     with open(file_path, "r") as file:
         text = file.read()
-    document = Document(filename=file_path, sha256=str_sha256(text))
+    document = Document(filename=file_path, uuid=str_to_uuid(text))
     paragraphs = get_paragraphs(document, text)
     with db_cursor() as cursor:
         for paragraph in tqdm(paragraphs):
-            ensure_semantic_triples_for_paragraph(
-                cursor, paragraph, openai_embedding_model
-            )
+            ensure_semantic_triples_for_paragraph(cursor, paragraph, openai_embedding_model)
             metrics_count("db.commit")
             cursor.connection.commit()
 
 
-def paragraph_exists_in_db(cursor: Cursor, paragraph_uuid: UUID) -> bool:
-    # Paragraphs use content-addressable sentinels in the db to indicate whether they've been processed.
+def paragraph_exists_in_db(cursor: Cursor, uuid: UUID) -> bool:
     result = cursor.execute(
-        "SELECT COUNT(*) FROM paragraph WHERE uuid=%s", (paragraph_uuid,)
+        """
+        SELECT 1
+        FROM paragraph
+        WHERE uuid = %s
+        """,
+        (uuid,),
     ).fetchone()
-    assert result
-
-    matching_paragraph_count: int = result["count"]
-    return matching_paragraph_count != 0
+    return bool(result)
 
 
 def ensure_semantic_triples_for_paragraph(
-    cursor: Cursor, paragraph: Paragraph, openai_embedding_model: str
+    cursor: Cursor,
+    paragraph: Paragraph,
+    openai_embedding_model: str,
 ) -> None:
     if paragraph_exists_in_db(cursor, paragraph.uuid):
         # Paragraph has already been processed, skip.
@@ -194,7 +187,7 @@ def ensure_semantic_triples_for_paragraph(
         return get_text_embedding(cursor, x, openai_embedding_model).uuid
 
     # TODO: multi-pass/transact this to avoid dupes in the event of failure midway.
-    triples: List[Triple] = get_triples(paragraph.text)
+    triples: List[Triple] = get_triples(paragraph)
     sql_triples: List[Tuple[UUID, UUID, UUID, UUID, UUID]] = []
     for triple in triples:
         logging.info(triple.summary)
@@ -211,7 +204,7 @@ def ensure_semantic_triples_for_paragraph(
         cursor.executemany(
             """
             INSERT INTO triple
-                (paragraph_uuid, subject_uuid, predicate_uuid, object_uuid, summary_uuid)
+                (document_uuid, subject_uuid, predicate_uuid, object_uuid, summary_uuid)
             VALUES
                 (%s, %s, %s, %s, %s)
             """,
@@ -230,7 +223,8 @@ def ensure_semantic_triples_for_paragraph(
 def show_paragraphs(filename: str) -> None:
     with open(filename, "r") as file:
         text = file.read()
-    document = Document(filename=filename, sha256=str_sha256(text))
+    text = text.strip()
+    document = Document(filename=filename, uuid=str_to_uuid(text))
     paragraphs = get_paragraphs(document, text)
     for paragraph in paragraphs:
         print(paragraph.text)
@@ -251,9 +245,7 @@ def migrate() -> None:
         cursor.connection.commit()
 
 
-def ensure_sentence_embeddings(
-    cursor: Cursor, sentences: List[spacy.tokens.span.Span], model: str
-):
+def ensure_sentence_embeddings(cursor: Cursor, sentences: List[spacy.tokens.span.Span], model: str):
     chunk_size = 200
     chunk = []
     for sentence in tqdm(sentences):
@@ -280,16 +272,17 @@ def num_tokens_from_string(string: str, encoding_name: str) -> int:
 
 
 def bulk_upsert_embeddings(cursor: Cursor, sentences: List[str], model: str) -> None:
-    if len(sentences) == 0:
-        return
-    metrics_count(
-        "embeddings.create", len(sentences), tags={"provider": "openai", "model": model}
-    )
     sentences = [
         sentence
         for sentence in sentences
         if not get_existing_text_embedding(cursor, sentence, model)
     ]
+    if len(sentences) == 0:
+        # Save an iota of time.
+        return
+
+    metrics_count("embeddings.create.", len(sentences))
+    metrics_count(f"embedding.create.{model}", value=len(sentences))
 
     with metrics_timer("openai.request.embeddings"):
         vectors = [
@@ -345,15 +338,17 @@ def query(openai_embedding_model: str) -> None:
                         ]
                     )
                 )
-                if paragraph := get_paragraph(gathered_triple.paragraph_uuid):
+                if paragraph := get_paragraph(cursor, gathered_triple.paragraph_uuid):
                     paragraphs.append(paragraph)
-            return []
+            print(
+                f"--------------------------- {colorize("Retrieved")} ---------------------------"
+            )
+            for paragraph in paragraphs:
+                print(paragraph)
 
 
 @contextmanager
-def db_cursor(
-    row_factory: Any = dict_row, call_register_vector: bool = True
-) -> Iterator[Cursor]:
+def db_cursor(row_factory: Any = dict_row, call_register_vector: bool = True) -> Iterator[Cursor]:
     with psycopg.connect(
         dbname="postgres",
         user="postgres",
