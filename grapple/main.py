@@ -3,7 +3,7 @@ import os
 import re
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from uuid import UUID
 
 import click
@@ -18,10 +18,10 @@ from grapple.colors import colorize
 from grapple.document import Document, upsert_document
 from grapple.embedding import Embedding
 from grapple.metrics import metrics_count, metrics_timer
-from grapple.openai import openai_client
+from grapple.openai import get_completion, openai_client
 from grapple.paragraph import Paragraph, get_paragraph, get_paragraphs
 from grapple.timer import Timer
-from grapple.triple import Triple, gather_related_triples, get_triples
+from grapple.triple import GatheredTriple, Triple, gather_related_triples, get_triples
 from grapple.types import Cursor, Vector
 from grapple.utils import num_tokens_from_string, str_to_uuid
 
@@ -35,22 +35,6 @@ logging.getLogger("httpx").setLevel(logging.WARN)
 @click.group()
 def main() -> None:
     pass
-
-
-class GraphNode(NamedTuple):
-    id: str
-    description: str
-
-
-class GraphEdge(NamedTuple):
-    id: str
-    edge_description: str
-    edge_embedding: List[float]
-    subject_node_id: str
-    object_node_id: str
-
-
-GraphItem = Union[GraphEdge, GraphNode]
 
 
 _text_embeddings_cache: Dict[Tuple[str, str], Embedding] = {}
@@ -330,41 +314,68 @@ def ingest(filename: str, openai_embedding_model: str) -> None:
 @click.option("--openai-embedding-model", default=DEFAULT_OPENAI_EMBEDDING_MODEL)
 def query(openai_embedding_model: str) -> None:
     while True:
-        query_str = input(colorize("Enter your query: "))
+        query_str = input(colorize("--------------------\nEnter your query: "))
         with db_cursor() as cursor:
             query_embedding: Vector = get_text_embedding(
                 cursor, query_str, openai_embedding_model
             ).vector
             gathered_triples = gather_related_triples(cursor, query_embedding)
-            paragraphs: List[Paragraph] = []
-            print(
-                f"--------------------------- {colorize("Related Triples")} ---------------------------"
+            components = get_rag_prompt_components(cursor, gathered_triples, max_tokens=10_000)
+            answer = get_completion(
+                f"""
+Context:
+
+{'\n'.join(components)}
+
+Instruction: Given the above text fragments, please answer the following query:
+
+{query_str}""".strip()
             )
-            for gathered_triple in gathered_triples:
-                print(
-                    " ".join(
-                        [
-                            f"{gathered_triple.id}: ",
-                            colorize(gathered_triple.subject),
-                            colorize(gathered_triple.predicate),
-                            colorize(gathered_triple.object),
-                            gathered_triple.summary,
-                        ]
-                    )
-                )
-                if paragraph := get_paragraph(cursor, gathered_triple.paragraph_uuid):
-                    paragraphs.append(paragraph)
-            print(
-                f"--------------------------- {colorize("Retrieved")} ---------------------------"
+            print(answer)
+
+
+def get_rag_prompt_components(
+    cursor: Cursor,
+    gathered_triples: List[GatheredTriple],
+    max_tokens: int,
+) -> List[str]:
+    chunks: List[Tuple[UUID, int, str]] = []
+    scored_paragraphs: List[Tuple[float, Paragraph]] = []
+    for gathered_triple in gathered_triples:
+        logging.info(
+            " ".join(
+                [
+                    f"{gathered_triple.id}: ",
+                    gathered_triple.subject,
+                    gathered_triple.predicate,
+                    gathered_triple.object,
+                    gathered_triple.summary,
+                ]
             )
-            last_document_uuid = None
-            for paragraph in sorted(
-                paragraphs, key=lambda p: (p.document_uuid, p.span_index_start)
-            ):
-                if last_document_uuid != paragraph.document_uuid:
-                    print(colorize(f"# document {paragraph.document_uuid}"))
-                    last_document_uuid = paragraph.document_uuid
-                print(paragraph.text)
+        )
+        if _paragraph := get_paragraph(cursor, gathered_triple.paragraph_uuid):
+            scored_paragraphs.append((gathered_triple.distance, _paragraph))
+        else:
+            logging.error(
+                f"[get_rag_prompt_components] could not find paragraph {gathered_triple.paragraph_uuid} in triple {gathered_triple.id}"
+            )
+
+    scored_paragraphs.sort(key=lambda p: (p[0], p[1].uuid))
+    tokens = 0
+    for _, paragraph in scored_paragraphs:
+        chunks.append(
+            (
+                paragraph.document_uuid,
+                paragraph.span_index_start,
+                paragraph.text,
+            )
+        )
+        tokens += num_tokens_from_string(paragraph.text)
+        if tokens > max_tokens:
+            # We're at the limit.
+            break
+
+    return [chunk[2] for chunk in sorted(chunks)]
 
 
 @contextmanager

@@ -1,3 +1,4 @@
+import logging
 import os
 import subprocess
 from typing import Optional
@@ -17,15 +18,12 @@ openai_client = OpenAI(
 
 
 def get_completion(prompt: str, model: str = "gpt-4o-2024-08-06") -> Optional[str]:
-    metrics_count(
-        "openai.completions",
-        tags={"provider": "openai", "model": model},
-    )
+    metrics_count(f"openai.completions.{model}")
     with metrics_timer("openai.request.completions"):
         completion = openai_client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "user", "content": prompt},
-            ],
+            messages=[{"role": "user", "content": prompt}],
         )
-    return completion.choices[0].message.content
+    completion_text = completion.choices[0].message.content
+    logging.info(f"[get_completion] log\nPrompt:\n\n{prompt}\n\n Completion:\n\n{completion_text}")
+    return completion_text
