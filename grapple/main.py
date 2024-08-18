@@ -157,7 +157,12 @@ def process_document_paragraphs(file_path: str, openai_embedding_model: str) -> 
     paragraphs = get_paragraphs(document, text)
     with db_cursor() as cursor:
         for paragraph in tqdm(paragraphs):
-            ensure_semantic_triples_for_paragraph(cursor, paragraph, openai_embedding_model)
+            ensure_semantic_triples_for_paragraph(
+                cursor,
+                document.uuid,
+                paragraph,
+                openai_embedding_model,
+            )
             metrics_count("db.commit")
             cursor.connection.commit()
 
@@ -176,6 +181,7 @@ def paragraph_exists_in_db(cursor: Cursor, uuid: UUID) -> bool:
 
 def ensure_semantic_triples_for_paragraph(
     cursor: Cursor,
+    document_uuid: UUID,
     paragraph: Paragraph,
     openai_embedding_model: str,
 ) -> None:
@@ -186,7 +192,7 @@ def ensure_semantic_triples_for_paragraph(
     def _get_uuid(x: str) -> UUID:
         return get_text_embedding(cursor, x, openai_embedding_model).uuid
 
-    # TODO: multi-pass/transact this to avoid dupes in the event of failure midway.
+    # TODO: batch get_text_embedding calls
     triples: List[Triple] = get_triples(paragraph)
     sql_triples: List[Tuple[UUID, UUID, UUID, UUID, UUID]] = []
     for triple in triples:
@@ -204,7 +210,7 @@ def ensure_semantic_triples_for_paragraph(
         cursor.executemany(
             """
             INSERT INTO triple
-                (document_uuid, subject_uuid, predicate_uuid, object_uuid, summary_uuid)
+                (paragraph_uuid, subject_uuid, predicate_uuid, object_uuid, summary_uuid)
             VALUES
                 (%s, %s, %s, %s, %s)
             """,
@@ -213,8 +219,18 @@ def ensure_semantic_triples_for_paragraph(
 
         # Mark this paragraph as done.
         cursor.execute(
-            "INSERT INTO paragraph (uuid, text) VALUES (%s, %s)",
-            (paragraph.uuid, paragraph.text),
+            """
+                INSERT INTO paragraph
+                    (uuid, text, document_uuid, span_index_start, span_index_lim)
+                VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                paragraph.uuid,
+                paragraph.text,
+                document_uuid,
+                paragraph.span_index_start,
+                paragraph.span_index_lim,
+            ),
         )
 
 

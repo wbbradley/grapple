@@ -98,46 +98,46 @@ def gather_related_triples(
             GatheredTriple.parse_obj,
             cursor.execute(
                 """
-        WITH nearest_embeddings AS (
-          SELECT
-              uuid,
-              (vector <+> %s) AS distance
-          FROM embedding
-        ), enriched_triples AS (
-          SELECT
-            t.id,
-            t.created_at,
-            p.text AS paragraph_text,
-            p.uuid AS paragraph_uuid,
-            es.text AS subject_text,
-            ep.text AS predicate_text,
-            eo.text AS object_text,
-            esu.text AS summary_text,
-            t.subject_uuid AS subject_uuid,
-            t.predicate_uuid AS predicate_uuid,
-            t.object_uuid AS object_uuid,
-            t.summary_uuid AS summary_uuid
-          FROM triple t
-          LEFT JOIN paragraph p ON t.paragraph_uuid = p.uuid
-          LEFT JOIN embedding es ON t.subject_uuid = es.uuid
-          LEFT JOIN embedding ep ON t.predicate_uuid = ep.uuid
-          LEFT JOIN embedding eo ON t.object_uuid = eo.uuid
-          LEFT JOIN embedding esu ON t.summary_uuid = esu.uuid
-        )
-        SELECT
-           DISTINCT et.id as triple_id,
-           et.paragraph_uuid,
-           subject_text subject,
-           predicate_text predicate,
-           object_text object,
-           summary_text summary,
-           ne.distance distance
-        FROM enriched_triples et
-        JOIN nearest_embeddings ne ON ne.uuid in (et.summary_uuid, et.subject_uuid,
-                                                  et.predicate_uuid, et.object_uuid)
-        ORDER BY distance
-        LIMIT %s
-    """,
+                    WITH nearest_embeddings AS (
+                      SELECT
+                          uuid,
+                          (vector <+> %s) AS distance
+                      FROM embedding
+                    ), enriched_triples AS (
+                      SELECT
+                        t.id,
+                        t.created_at,
+                        p.text AS paragraph_text,
+                        p.uuid AS paragraph_uuid,
+                        es.text AS subject_text,
+                        ep.text AS predicate_text,
+                        eo.text AS object_text,
+                        esu.text AS summary_text,
+                        t.subject_uuid AS subject_uuid,
+                        t.predicate_uuid AS predicate_uuid,
+                        t.object_uuid AS object_uuid,
+                        t.summary_uuid AS summary_uuid
+                      FROM triple t
+                      LEFT JOIN paragraph p ON t.paragraph_uuid = p.uuid
+                      LEFT JOIN embedding es ON t.subject_uuid = es.uuid
+                      LEFT JOIN embedding ep ON t.predicate_uuid = ep.uuid
+                      LEFT JOIN embedding eo ON t.object_uuid = eo.uuid
+                      LEFT JOIN embedding esu ON t.summary_uuid = esu.uuid
+                    )
+                    SELECT
+                       DISTINCT et.id as id,
+                       et.paragraph_uuid,
+                       subject_text subject,
+                       predicate_text predicate,
+                       object_text object,
+                       summary_text summary,
+                       ne.distance distance
+                    FROM enriched_triples et
+                    JOIN nearest_embeddings ne ON ne.uuid in (et.summary_uuid, et.subject_uuid,
+                                                              et.predicate_uuid, et.object_uuid)
+                    ORDER BY distance
+                    LIMIT %s
+                """,
                 (query_embedding, 10),
             ),
         )
