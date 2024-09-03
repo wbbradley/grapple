@@ -1,0 +1,21 @@
+#!/bin/bash
+die() {
+  echo "$0: $*" >&2
+  exit 1
+}
+
+cd "$(dirname "$0")" ||:
+if [[ "$1" = "-f" ]]; then
+  shift
+  rm -rf .venv ||:
+fi
+if ! [[ -f ".venv/pyvenv.cfg" ]]; then
+  echo "$0: creating env with $(python3 --version)"
+  python3 -m venv .venv || die "failed to setup venv"
+fi
+if ! [[ -x ".venv/bin/uv" ]]; then
+  .venv/bin/python -m pip install -U pip uv || die "failed to setup venv"
+fi
+
+.venv/bin/python -m uv pip install -r requirements.txt -r requirements-dev.txt
+.venv/bin/python -m pip install -e .

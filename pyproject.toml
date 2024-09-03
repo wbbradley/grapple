@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grapple"
+version = "0.1.0"
+description = "A tool to parse books and store subject-predicate-object triples in a graph database."
+authors = [{ name = "Will Bradley" }]
+
+[project.scripts]
+grapple = "grapple.main:main"
+
+[tool.ruff]
+line-length = 100
+
+[tool.autoimport.common_statements]
+Paragraph = "from grapple.paragraph import Paragraph"
+BaseModel = "from pydantic import BaseModel"
+Cursor = "from grapple.types import Cursor"
+Embedding = "from grapple.embedding import Embedding"
+Tag = "from grapple.tag import Tag"
+Timer = "from grapple.timer import Timer"
+Triple = "from grapple.triple import Triple"
+UUID = "from uuid import UUID"
+Vector = "from grapple.types import Vector"
+colorize = "from grapple.colors import colorize"
+contextmanager = "from contextlib import contextmanager"
+cosine = "from scipy.spatial.distance import cosine"
+dataclass = "from dataclasses import dataclass"
+defaultdict = "from collections import defaultdict"
+metrics_count = "from grapple.metrics import metrics_count"
+metrics_timer = "from grapple.metrics import metrics_timer"
+np = "import numpy as np"
+pprint = "from pprint import pprint"
+tqdm = "from tqdm import tqdm"
